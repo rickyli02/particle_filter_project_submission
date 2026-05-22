@@ -28,17 +28,3 @@ def log_normal_pdf(y, mean, sd):
     return -0.5 * np.log(2.0 * np.pi * sd ** 2) - 0.5 * ((y - mean) / sd) ** 2
 
 
-def systematic_resample(weights, rng):
-    """Systematic resampling with an explicit RNG for reproducible seeds."""
-    N = len(weights)
-    positions = (rng.random() + np.arange(N)) / N
-    cumsum = np.cumsum(weights)
-    indices = np.zeros(N, dtype=int)
-    i = j = 0
-    while i < N:
-        if positions[i] < cumsum[j]:
-            indices[i] = j
-            i += 1
-        else:
-            j += 1
-    return indices
