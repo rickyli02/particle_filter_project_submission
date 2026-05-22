@@ -1,5 +1,19 @@
 import numpy as np
 import scipy.stats as stats
+from state_space_model import StateSpaceModel
+
+class ResamplingMethod:
+    pass
+
+class StateSpaceModel:
+    pass
+
+class ParticleFilter:
+    def __init__(self, N_particles=10000, resampleMethod=None, seed=None):
+        self.N_particles = N_particles
+        self.rng = np.random.default_rng(seed)
+        self.resampling_method = resampleMethod
+
 
 
 def _systematic_resample(weights):

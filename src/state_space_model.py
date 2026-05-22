@@ -1,6 +1,117 @@
 import numpy as np
 from particle_filter import _systematic_resample
+from utils import log_normal_pdf_scalar, logsumexp
 
+# Abstract class for state-space models
+class StateSpaceModel:
+    def __init__(self):
+        # include model parameters
+        pass
+    
+    def sample_initial_distribution(self):
+        # should use stationary distribution if possible, 
+        # otherwise some reasonable initial distribution
+        # alternatively, could allow user to specify a fixed initial state
+        raise NotImplementedError
+    
+    def transition(self, x_prev):
+        raise NotImplementedError
+
+    def observation(self, x):
+        raise NotImplementedError
+
+    def log_initial_distribution(self, x):
+        raise NotImplementedError
+
+    def log_transition_density(self, x_next, x_prev):
+        raise NotImplementedError
+
+    def log_observation_density(self, y, x):
+        raise NotImplementedError
+    
+
+
+
+
+# Simple Linear Gaussian state-space model, 1D latent state and observation
+class SimpleLinearGaussianSSM(StateSpaceModel):
+    def __init__(self, phi, alpha, sigma, tau, seed=None):
+        super().__init__()
+        self.phi = phi
+        self.alpha = alpha
+        self.sigma = sigma
+        self.tau = tau
+
+        self.seed = seed if seed is not None else 42
+        self.rng = np.random.default_rng(seed)
+    
+
+    @property
+    def stationary_var(self):
+        return self.sigma ** 2 / (1 - self.phi ** 2) if abs(self.phi) < 1 else np.inf
+    @property
+    def params(self):
+        return self.phi, self.alpha, self.sigma, self.tau
+
+    def initial_distribution(self):
+        # x_0 ~ N(0, sigma^2 / 1 - phi^2) for stationarity
+        return self.rng.normal(0, np.sqrt(self.stationary_var))
+
+    def transition(self, x_prev):
+        # x_next = phi * x_prev + eps,   eps ~ N(0, sigma^2)
+        # deal with cases where x_next is a scalar and a numpy array
+        if np.isscalar(x_prev):
+            x_prev = np.array([x_prev])
+        return self.phi * x_prev + self.rng.normal(0, self.sigma, size=x_prev.shape)
+
+    def observation(self, x):
+        # y_t = alpha * x_t + eta,   eta ~ N(0, tau^2)
+        if np.isscalar(x):
+            x = np.array([x])
+        return self.alpha * x + self.rng.normal(0, self.tau, size=x.shape)
+
+    def log_transition_density(self, x_next, x_prev):
+        return log_normal_pdf_scalar(x_next, self.transition(x_prev), self.sigma ** 2)
+
+    def log_observation_density(self, y, x):
+        return log_normal_pdf_scalar(y, self.observation(x), self.tau ** 2)
+
+class regime_switching_SSM(StateSpaceModel):
+    def __init__(self, A_list, C_list, Q_list, R_list, regime_transition_matrix, regime_probabilities, seed=None):
+        super().__init__()
+        self.A_list = A_list
+        self.C_list = C_list
+        self.Q_list = Q_list
+        self.R_list = R_list
+        self.regime_transition_matrix = regime_transition_matrix
+        self.regime_probabilities = regime_probabilities
+
+        self.seed = seed if seed is not None else 42
+        self.rng = np.random.default_rng(seed)
+
+    def transition(self, x_prev, regime):
+        A = self.A_list[regime]
+        Q = self.Q_list[regime]
+        return A @ x_prev + self.rng.multivariate_normal(np.zeros(A.shape[0]), Q)
+
+    def observation(self, x, regime):
+        C = self.C_list[regime]
+        R = self.R_list[regime]
+        return C @ x + self.rng.multivariate_normal(np.zeros(C.shape[0]), R)
+    
+    def log_transition_density(self, x_next, x_prev, regime):
+        A = self.A_list[regime]
+        Q = self.Q_list[regime]
+        mean = A @ x_prev
+        var = Q
+        return log_normal_pdf_scalar(x_next, mean, var)
+
+    def log_observation_density(self, y, x, regime):
+        C = self.C_list[regime]
+        R = self.R_list[regime]
+        mean = C @ x
+        var = R
+        return log_normal_pdf_scalar(y, mean, var)
 
 # ============================================================
 # Basic numerical utilities
