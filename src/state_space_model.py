@@ -1,13 +1,35 @@
 import numpy as np
-from particle_filter import _systematic_resample
-from utils import log_normal_pdf_scalar, logsumexp
+from utils import log_normal_pdf_scalar, logsumexp, systematic_resample
 
 # Abstract class for state-space models
 class StateSpaceModel:
     def __init__(self):
         # include model parameters
+        self.params_dict = {}
+
+        # random seed for reproducibility
+        self.seed = seed if seed is not None else 42
+        self.rng = np.random.default_rng(seed)
         pass
+
+
+    def __repr__(self):
+        description = f"""{self.__class__.__name__}
+        Description of the model and its parameters here.
+        Parameters: {self.params_dict}
+        Transition: transition equation here
+        Observation: observation equation here
+        """
+        print(description)
+        return f"{self.__class__.__name__}"
     
+    @property
+    def params(self):
+        print("Model parameters:")
+        for key, value in self.params_dict.items():
+            print(f"  {key}: {value}")
+        return tuple(self.params_dict.values())
+
     def sample_initial_distribution(self):
         # should use stationary distribution if possible, 
         # otherwise some reasonable initial distribution
@@ -28,6 +50,19 @@ class StateSpaceModel:
 
     def log_observation_density(self, y, x):
         raise NotImplementedError
+
+    def generate_data(self, num_time_steps):
+        states = np.zeros((num_time_steps, self.state_dim))
+        observations = np.zeros((num_time_steps, self.obs_dim))
+
+        states[0] = self.sample_initial_distribution()
+        observations[0] = self.observation(states[0])
+
+        for t in range(1, num_time_steps):
+            states[t] = self.transition(states[t-1])
+            observations[t] = self.observation(states[t])
+
+        return states, observations
     
 
 
@@ -41,6 +76,7 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
         self.alpha = alpha
         self.sigma = sigma
         self.tau = tau
+        self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma': sigma, 'tau': tau}
 
         self.seed = seed if seed is not None else 42
         self.rng = np.random.default_rng(seed)
@@ -49,9 +85,7 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
     @property
     def stationary_var(self):
         return self.sigma ** 2 / (1 - self.phi ** 2) if abs(self.phi) < 1 else np.inf
-    @property
-    def params(self):
-        return self.phi, self.alpha, self.sigma, self.tau
+    
 
     def initial_distribution(self):
         # x_0 ~ N(0, sigma^2 / 1 - phi^2) for stationarity
@@ -113,26 +147,6 @@ class regime_switching_SSM(StateSpaceModel):
         var = R
         return log_normal_pdf_scalar(y, mean, var)
 
-# ============================================================
-# Basic numerical utilities
-# ============================================================
-
-def logsumexp(a):
-    a = np.asarray(a, dtype=float)
-    a_max = np.max(a)
-    return a_max + np.log(np.sum(np.exp(a - a_max)))
-
-
-def log_normal_pdf_scalar(y, mean, var):
-    """
-    Log density of scalar N(mean, var).
-    """
-    if var <= 0 or not np.isfinite(var):
-        return -np.inf
-    return -0.5 * (np.log(2.0 * np.pi * var) + ((y - mean) ** 2) / var)
-
-
-
 def log_likelihood(y, x, alpha, tau, phi, sigma):
     """
     Complete-data log-likelihood log p(x_{1:T}, y_{1:T} | theta).
@@ -156,6 +170,7 @@ def pf_log_likelihood(y, phi, alpha, sigma, tau, N_particles=500):
     """
     T = len(y)
     N = N_particles
+    rng = np.random.default_rng()
     particles     = np.random.normal(0, sigma, size=N)
     log_lik_total = 0.0
 
@@ -171,7 +186,7 @@ def pf_log_likelihood(y, phi, alpha, sigma, tau, N_particles=500):
         w  = np.exp(log_w - max_log_w)
         w /= w.sum()
         if 1.0 / np.sum(w ** 2) < N / 2:
-            particles = particles[_systematic_resample(w)]
+            particles = particles[systematic_resample(w, rng)]
 
     return log_lik_total
 

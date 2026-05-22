@@ -1,57 +1,14 @@
 import numpy as np
+from utils import logsumexp, log_normal_pdf_scalar, log_normal_pdf, systematic_resample
 
 
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
 
-def log_normal_pdf(y, mean, sd):
-    """Log density of N(mean, sd^2), vectorized."""
-    return -0.5 * np.log(2.0 * np.pi * sd ** 2) - 0.5 * ((y - mean) / sd) ** 2
-
-
-def logsumexp(a):
-    """Numerically stable log(sum(exp(a)))."""
-    a_max = np.max(a)
-    return a_max + np.log(np.sum(np.exp(a - a_max)))
-
-def log_normal_pdf_scalar(y, mean, var):
-    """
-    Log density of scalar N(mean, var).
-    """
-    if var <= 0 or not np.isfinite(var):
-        return -np.inf
-    return -0.5 * (np.log(2.0 * np.pi * var) + ((y - mean) ** 2) / var)
-
 # ============================================================
 # State-space model utilities
 # ============================================================
-
-def systematic_resample(weights, rng):
-    """
-    Systematic resampling (rng-based for reproducibility within PMMH).
-
-    Parameters
-    ----------
-    weights : (N,) normalized particle weights
-    rng     : np.random.Generator
-
-    Returns
-    -------
-    indices : (N,) resampled ancestor indices
-    """
-    N = len(weights)
-    positions = (rng.random() + np.arange(N)) / N
-    cumulative_sum = np.cumsum(weights)
-    indices = np.zeros(N, dtype=int)
-    i = j = 0
-    while i < N:
-        if positions[i] < cumulative_sum[j]:
-            indices[i] = j
-            i += 1
-        else:
-            j += 1
-    return indices
 
 
 def stationary_regime_probs(p11, p22):

@@ -1,8 +1,8 @@
 import numpy as np
+from utils import systematic_resample, log_normal_pdf_scalar, logsumexp
 from regime_switching import (
-    systematic_resample, stationary_regime_probs, build_matrices,
-    default_initial_state, log_normal_pdf_scalar, logsumexp,
-    sigmoid, logit,
+    stationary_regime_probs, build_matrices,
+    default_initial_state, sigmoid, logit,
 )
 from kim_filter import kalman_predict_update
 

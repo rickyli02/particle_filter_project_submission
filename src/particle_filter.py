@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.stats as stats
 from state_space_model import StateSpaceModel
+from utils import systematic_resample
 
 class ResamplingMethod:
     pass
@@ -15,30 +16,6 @@ class ParticleFilter:
         self.resampling_method = resampleMethod
 
 
-
-def _systematic_resample(weights):
-    """Systematic resampling — lower variance than multinomial."""
-    N = len(weights)
-    positions = (np.arange(N) + np.random.uniform()) / N
-    cumsum = np.cumsum(weights)
-    indices = np.searchsorted(cumsum, positions)
-    return indices
-
-
-def systematic_resample(weights, rng):
-    """Systematic resampling with an explicit RNG (for reproducible seeds)."""
-    N = len(weights)
-    positions = (rng.random() + np.arange(N)) / N
-    cumsum = np.cumsum(weights)
-    indices = np.zeros(N, dtype=int)
-    i = j = 0
-    while i < N:
-        if positions[i] < cumsum[j]:
-            indices[i] = j
-            i += 1
-        else:
-            j += 1
-    return indices
 
 
 def particle_filter(y, phi, alpha, sigma, tau, N_particles=10000):
@@ -63,6 +40,7 @@ def particle_filter(y, phi, alpha, sigma, tau, N_particles=10000):
     """
     T = len(y)
     N = N_particles
+    rng = np.random.default_rng()
     particles = np.random.normal(0, sigma, size=N)
     weights   = np.ones(N) / N
     x_est        = np.zeros(T)
@@ -83,7 +61,7 @@ def particle_filter(y, phi, alpha, sigma, tau, N_particles=10000):
 
         n_eff = 1.0 / np.sum(weights ** 2)
         if n_eff < N / 2:
-            indices = _systematic_resample(weights)
+            indices = systematic_resample(weights, rng)
             particles = particles[indices]
             weights = np.ones(N) / N
 
@@ -113,6 +91,7 @@ def particle_filter_student_t(y, phi, alpha, sigma, scale, df, N_particles=10000
     """
     T = len(y)
     N = N_particles
+    rng = np.random.default_rng()
     particles = np.random.normal(0, sigma, size=N)
     x_est       = np.zeros(T)
     x_particles = np.zeros((T, N))
@@ -127,7 +106,7 @@ def particle_filter_student_t(y, phi, alpha, sigma, scale, df, N_particles=10000
         x_est[t_step] = np.dot(w, particles)
         x_particles[t_step] = particles
         if 1.0 / np.sum(w ** 2) < N / 2:
-            particles = particles[_systematic_resample(w)]
+            particles = particles[systematic_resample(w, rng)]
 
     return x_est, x_particles
 

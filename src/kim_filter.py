@@ -1,5 +1,6 @@
 import numpy as np
-from regime_switching import systematic_resample, stationary_regime_probs, build_matrices, default_initial_state, log_normal_pdf_scalar, logsumexp
+from utils import log_normal_pdf_scalar, logsumexp
+from regime_switching import stationary_regime_probs, build_matrices, default_initial_state
 
 
 def kalman_predict_update(m_prev, C_prev, y_t, regime_j, theta):
