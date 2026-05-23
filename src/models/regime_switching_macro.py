@@ -152,16 +152,26 @@ class RegimeSwitchingMacro(StateSpaceModel):
         }
 
     def __repr__(self):
-        description = f"""{self.__class__.__name__}
-        Regime-switching macro state-space model
-        Regimes  : {self.n_regimes}  (regime-specific Q, shared A/H/R)
-        State    : z_t = [x_t, g_t*, u_t*, pi_t^e, r_t*, x_{{t-1}}]  (dim=6)
-        Observed : y_t = [GDP growth, unemployment, inflation, nominal rate]  (dim=4)
-        Transition: z_t = A z_{{t-1}} + a + eps_t,  eps_t ~ N(0, Q_{{s_t}})
-        Obs model : y_t = H z_t + b_t(i_{{t-1}}) + eta_t,  eta_t ~ N(0, R)
-        Parameters: {self.macro_params_dict}
-        """
-        return description
+        return (
+            f"RegimeSwitchingMacro("
+            f"n_regimes={self.n_regimes}, "
+            f"state_dim={self.state_dim}, obs_dim={self.obs_dim})"
+        )
+
+    def describe(self):
+        p = self.macro_params
+        return (
+            f"{self.__class__.__name__}\n"
+            f"  Regime-switching macro state-space model\n"
+            f"  Regimes  : {self.n_regimes}  (regime-specific Q, shared A/H/R)\n"
+            f"  State    : z_t = [x_t, g_t*, u_t*, pi_t^e, r_t*, x_{{t-1}}]  (dim=6)\n"
+            f"  Observed : y_t = [GDP growth, unemployment, inflation, nominal rate]  (dim=4)\n"
+            f"  Transition:  z_t = A z_{{t-1}} + a + eps_t,  eps_t ~ N(0, Q_{{s_t}})\n"
+            f"  Observation: y_t = H z_t + b_t(i_{{t-1}}) + eta_t,  eta_t ~ N(0, R)\n"
+            f"  Scalar parameters: {self.macro_params_dict}\n"
+            f"  State sigmas (per regime):\n{p.state_sigmas}\n"
+            f"  Obs sigmas: {p.obs_sigmas}"
+        )
 
     # ── validation ────────────────────────────────────────────────────────────
 

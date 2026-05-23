@@ -21,19 +21,24 @@ class RegimeSwitchingSSM(StateSpaceModel):
         self.rng = np.random.default_rng(seed)
 
     def __repr__(self):
-        description = f"""{self.__class__.__name__}
-        Regime-switching linear Gaussian state-space model.
-        State dimension: {self.state_dim}, Observation dimension: {self.obs_dim}
-        Latent state: (x_t, s_t) where s_t is the discrete regime at time t
-        Number of regimes: {self.n_regimes}
-        Transition matrices: {self.A_list}
-        Observation matrices: {self.C_list}
-        Process noise covariances: {self.Q_list}
-        Observation noise covariances: {self.R_list}
-        Regime transition matrix: {self.regime_transition_matrix}
-        Initial regime probabilities: {self.regime_probabilities_stationary}
-        """
-        return description
+        return (
+            f"RegimeSwitchingSSM("
+            f"n_regimes={self.n_regimes}, "
+            f"state_dim={self.state_dim}, obs_dim={self.obs_dim})"
+        )
+
+    def describe(self):
+        return (
+            f"{self.__class__.__name__}\n"
+            f"  Regime-switching linear Gaussian SSM\n"
+            f"  State dim: {self.state_dim},  Obs dim: {self.obs_dim},  Regimes: {self.n_regimes}\n"
+            f"  Latent state: (x_t, s_t)  where s_t in {{0, ..., {self.n_regimes - 1}}}\n"
+            f"  Transition:  x_t | s_t ~ N(A_{{s_t}} x_{{t-1}},  Q_{{s_t}})\n"
+            f"  Observation: y_t | s_t ~ N(C_{{s_t}} x_t,         R_{{s_t}})\n"
+            f"  Regime:      P(s_t = j | s_{{t-1}} = i) = P_ij\n"
+            f"  Regime transition matrix:\n{self.regime_transition_matrix}\n"
+            f"  Stationary regime probs: {self.regime_probabilities_stationary}"
+        )
 
     def solve_stationary_distribution(self):
         # Solve for the stationary distribution of the regime Markov chain

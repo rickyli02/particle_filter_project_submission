@@ -64,11 +64,31 @@ class LinearARMASSM(StateSpaceModel):
             'tau': tau
         }
 
-        self.s = None # current state, shape (state_dim,)
+        self.s = None
         self.s_history = []
 
         self.seed = seed if seed is not None else 42
-        self.rng = np.random.default_rng(seed)  
+        self.rng = np.random.default_rng(seed)
+
+    def __repr__(self):
+        return (
+            f"LinearARMASSM("
+            f"phi={self.phi!r}, alpha={self.alpha!r}, c={self.c!r}, "
+            f"theta_1={self.theta_1!r}, theta_2={self.theta_2!r}, theta_3={self.theta_3!r}, "
+            f"sigma={self.sigma!r}, tau={self.tau!r})"
+        )
+
+    def describe(self):
+        return (
+            f"{self.__class__.__name__}\n"
+            f"  ARMA(1,3) latent process with Gaussian noise\n"
+            f"  Parameters: {self.params_dict}\n"
+            f"  State:       s_t = [x_t, nu_t, nu_{{t-1}}, nu_{{t-2}}]  (dim=4)\n"
+            f"  Transition:  x_t = {self.c} + {self.phi} x_{{t-1}} + nu_t"
+            f" + {self.theta_1} nu_{{t-1}} + {self.theta_2} nu_{{t-2}} + {self.theta_3} nu_{{t-3}},  "
+            f"nu_t ~ N(0, {self.sigma}^2)\n"
+            f"  Observation: y_t = {self.alpha} * x_t + eps_t,  eps_t ~ N(0, {self.tau}^2)"
+        )
 
     def transition(self, s_prev):
         x_prev, nu_prev, nu_prev_1, nu_prev_2 = s_prev

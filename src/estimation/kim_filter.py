@@ -15,6 +15,11 @@ class KimFilter:
     def __repr__(self):
         return f"KimFilter(model={self.model}, n_particles={self.n_particles}, resampling_method={self.resampling_method})"
 
-    def run(self, data):
+    def run_filter(self, data):
         # Implementation of the Kim filter algorithm goes here
+        pass
+
+    def run_smoother(self, data):
+        # Implementation of the Kim smoother algorithm goes here
+        # forward-backward smoother
         pass

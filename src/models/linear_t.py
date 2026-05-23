@@ -23,14 +23,20 @@ class LinearTSSM(StateSpaceModel):
         self.rng = np.random.default_rng(seed)
 
     def __repr__(self):
-        description = f"""{self.__class__.__name__}
-        Linear T state-space model with 1D latent state and observation.
-        Parameters: {self.params_dict}
-        Transition: x_t = phi * x_(t-1) + sigma * eps_t,   eps_t ~ t(df, 1)
-        Observation: y_t = alpha * x_t + tau * nu_t,       nu_t  ~ N(0, 1)
-        """
+        return (
+            f"LinearTSSM("
+            f"phi={self.phi!r}, alpha={self.alpha!r}, sigma={self.sigma!r}, "
+            f"tau={self.tau!r}, df={self.df!r})"
+        )
 
-        return description
+    def describe(self):
+        return (
+            f"{self.__class__.__name__}\n"
+            f"  Linear T SSM — 1D latent state and observation\n"
+            f"  Parameters: {self.params_dict}\n"
+            f"  Transition:  x_t = {self.phi} * x_(t-1) + {self.sigma} * eps_t,   eps_t ~ t(df={self.df})\n"
+            f"  Observation: y_t = {self.alpha} * x_t + nu_t,                      nu_t  ~ N(0, {self.tau}^2)"
+        )
 
     def sample_initial_distribution(self):
         # stationary distribution, x_0 ~ t(df, 0, sigma^2 / (1 - phi^2))

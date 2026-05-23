@@ -69,3 +69,8 @@ class ParticleFilter:
         self.latent_state_estimate = np.average(self.particles, axis=0, weights=self.weights)
 
         return self.latent_state_estimate, self.particle_history, self.weight_history, self.resample_history, loglik
+
+    def run_smoother(self):
+        # Implementation of the particle smoother algorithm goes here
+        # possibilities: forward-backward smoother, two-filter smoother, fixed-lag smoother
+        pass

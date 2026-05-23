@@ -14,14 +14,17 @@ class StateSpaceModel:
 
 
     def __repr__(self):
-        description = f"""{self.__class__.__name__}
-        Latent state dimension: {self.state_dim}
-        Observation dimension: {self.obs_dim}
-        Parameters: {self.params_dict}
-        Transition: transition equation here
-        Observation: observation equation here
-        """
-        return description
+        return f"{self.__class__.__name__}(state_dim={self.state_dim}, obs_dim={self.obs_dim})"
+
+    def describe(self):
+        return (
+            f"{self.__class__.__name__}\n"
+            f"  Latent state dimension: {self.state_dim}\n"
+            f"  Observation dimension:  {self.obs_dim}\n"
+            f"  Parameters: {self.params_dict}\n"
+            f"  Transition:  [not implemented]\n"
+            f"  Observation: [not implemented]"
+        )
 
     @property
     def params(self):
@@ -41,6 +44,11 @@ class StateSpaceModel:
     def initial_density(self, x):
         # Return the density p(x_0 = x) of the initial distribution.
         raise NotImplementedError
+
+    def log_initial_density(self, x):
+        # Return the log density log p(x_0 = x) of the initial distribution.
+        # can be overwritten with closed form expression instead
+        return np.log(self.initial_density(x))
 
     def transition(self, x_prev):
         raise NotImplementedError

@@ -22,10 +22,21 @@ class PMMH:
     def proposal_distribution(self, theta):
         # Simple Gaussian random walk proposal
         return np.random.normal(theta, self.step_sizes)
+    
+    def proposal_log_density(self):
+        pass
+
+    def acceptance_ratio(self):
+        pass
 
     def run(self, data):
+        # replce the following with correct ''' docstring
         # Implementation of the PMMH algorithm goes here
-        pass
+        # requires model to have contrain / unconstrain methods
+        # uses estimated log likelihood from particle filter for acceptance ratio
+        pass # returns estimated parameters of the model
+
+
 
 # Block-update PMMH
 class BlockPMMH(PMMH):
