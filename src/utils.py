@@ -16,6 +16,18 @@ def softmax(x):
     return np.exp(x) / np.sum(np.exp(x), axis=1, keepdims=True)
 
 
+def row_softmax(x: np.ndarray) -> np.ndarray:
+    """Numerically stable row-wise softmax (each row sums to 1)."""
+    x_s = x - np.max(x, axis=1, keepdims=True)
+    e = np.exp(x_s)
+    return e / np.sum(e, axis=1, keepdims=True)
+
+
+def symmetrize(m: np.ndarray) -> np.ndarray:
+    """Return (m + m.T) / 2 to enforce symmetry of a covariance matrix."""
+    return 0.5 * (m + m.T)
+
+
 def log_normal_pdf_scalar(y, mean, var):
     """Log density of scalar N(mean, var). Returns -inf for non-positive variance."""
     if var <= 0 or not np.isfinite(var):

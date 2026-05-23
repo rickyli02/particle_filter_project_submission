@@ -46,7 +46,7 @@ class ParticleFilter:
 
             # Compute log-weights and accumulate marginal log-likelihood
             y_t = self.data[t]
-            log_weights = np.array([self.model.log_observation_density(y_t, p) for p in self.particles])
+            log_weights = np.array([self.model.log_observation_density(y_t, p) for p in self.particles]).flatten()
             loglik += logsumexp(log_weights) - np.log(N)
 
             # Normalize weights

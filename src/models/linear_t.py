@@ -26,7 +26,7 @@ class LinearTSSM(StateSpaceModel):
         description = f"""{self.__class__.__name__}
         Linear T state-space model with 1D latent state and observation.
         Parameters: {self.params_dict}
-        Transition: x_t = phi * x_{t-1} + sigma * eps_t,   eps_t ~ t(df, 1)
+        Transition: x_t = phi * x_(t-1) + sigma * eps_t,   eps_t ~ t(df, 1)
         Observation: y_t = alpha * x_t + tau * nu_t,       nu_t  ~ N(0, 1)
         """
 
