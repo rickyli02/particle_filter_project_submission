@@ -1,45 +1,7 @@
 from models.base import StateSpaceModel
 import numpy as np
 from utils import logsumexp
-
-
-class ResamplingMethod:
-    def __init__(self, seed=None):
-        self.resample_threshold = 0.5
-
-        self.seed = seed if seed is not None else 42
-        self.rng = np.random.default_rng(seed)
-
-    def resample(self, particles, weights):
-        raise NotImplementedError("Resampling method must implement resample(particles, weights)")
-
-
-class MultinomialResampling(ResamplingMethod):
-    def resample(self, particles, weights):
-        N = len(particles)
-        indices = self.rng.choice(N, size=N, p=weights)
-        return particles[indices]
-
-
-class SystematicResampling(ResamplingMethod):
-    def _get_indices(self, weights):
-        """Return resampled indices using the systematic scheme."""
-        N = len(weights)
-        positions = (self.rng.random() + np.arange(N)) / N
-        cumsum = np.cumsum(weights)
-        indices = np.zeros(N, dtype=int)
-        i = j = 0
-        while i < N:
-            if positions[i] < cumsum[j]:
-                indices[i] = j
-                i += 1
-            else:
-                j += 1
-        return indices
-
-    def resample(self, particles, weights):
-        return particles[self._get_indices(weights)]
-
+from estimation.resampling_methods import ResamplingMethod
 
 class ParticleFilter:
     def __init__(self, model=None, N_particles=10000, data=None, resample_method=None, seed=None):
@@ -58,6 +20,9 @@ class ParticleFilter:
         self.N_particles = N_particles
         self.seed = seed if seed is not None else 42
         self.rng = np.random.default_rng(seed)
+
+        self.particles = None # current particles at each time step, shape (N_particles, state_dim)
+        self.weights = None # current normalized weights, shape (N_particles,)
 
         self.particle_history = []
         self.weight_history = []
