@@ -11,7 +11,8 @@ class StateSpaceModel:
         # random seed for reproducibility
         self.seed = seed if seed is not None else 42
 
-
+        check_params_validity()  # raises error message if params are invalid
+        self.rng = np.random.default_rng(seed)
 
     def __repr__(self):
         return f"{self.__class__.__name__}(state_dim={self.state_dim}, obs_dim={self.obs_dim})"
@@ -30,11 +31,24 @@ class StateSpaceModel:
     def params(self):
         return tuple(self.params_dict.values())
 
+    def check_params_validity(self):
+        # raises error message if params are invalid
+        raise NotImplementedError
+
     def constrain_params(self, unconstrained_params):
         raise NotImplementedError
 
     def unconstrain_params(self, constrained_params):
         raise NotImplementedError
+
+    def update_params(self, constrained_params):
+        # Update all model attributes and params_dict in-place from constrained params.
+        # should call check_params_validity() before updating
+        raise NotImplementedError
+
+    def clear_state(self):
+        # Reset any accumulated mutable runtime state between runs. Default: no-op.
+        pass
 
     def sample_initial_distribution(self):
         # Sample x_0 from the initial distribution.

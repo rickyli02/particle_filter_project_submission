@@ -1,199 +1,231 @@
 # Particle Filter Project
 
-Sequential Monte Carlo and Kalman-filter methods for regime-switching state-space models, with an application to macroeconomic data.
+Sequential Monte Carlo and Kalman-filter methods for state-space models, with an application to macroeconomic regime-switching.
 
 ---
 
-## Repository layout
+## Architecture
+
+The project is organized as two layers:
+
+- **`src/models/`** — state-space model definitions (dynamics, densities, parameter transforms)
+- **`src/estimation/`** — inference algorithms that operate on any compatible model
+
+Models and estimators communicate through the `StateSpaceModel` interface defined in `src/models/base.py`. `src/utils.py` provides shared numerical primitives used across both layers.
+
+---
+
+## Directory structure
 
 ```
 particle_filter_project/
 ├── src/
-│   ├── particle_filter.py       # Core bootstrap PF implementations
-│   ├── state_space_model.py     # SSM abstract class, linear Gaussian model, PMMH
-│   ├── regime_switching.py      # Two-regime bootstrap PF + PMMH
-│   ├── rbpf.py                  # Rao-Blackwellized PF + PMMH (9-param growth model)
-│   ├── kim_filter.py            # Kim filter + MLE for growth model
-│   ├── regime_change_macro.py   # Full macro regime-switching model (Kim filter/smoother/forecast)
-│   ├── analysis_utils.py        # ARIMA model-selection utilities
-│   └── utils.py                 # Shared numerical primitives (logsumexp, softmax, log_normal_pdf_scalar)
-├── data/
-│   └── synthetic_data.py        # Synthetic data generators
-└── notebooks/
-    ├── MC_Projectv2.ipynb
-    ├── fred_regime_macro.ipynb
-    ├── pmmh_blocked_real_gdp.ipynb
-    ├── real_data_analysis.ipynb
-    └── testing_estimation.ipynb
+│   ├── models/
+│   │   ├── base.py                   # Abstract StateSpaceModel base class
+│   │   ├── linear_gaussian.py        # SimpleLinearGaussianSSM, LinearGaussianSSM
+│   │   ├── linear_t.py               # LinearTSSM (t-distributed process noise)
+│   │   ├── linear_ARMA.py            # LinearARMASSM (ARMA(1,3) latent state)
+│   │   ├── regime_switching.py       # RegimeSwitchingSSM (general K-regime)
+│   │   └── regime_switching_macro.py # RegimeSwitchingMacro (6-state macro model)
+│   ├── estimation/
+│   │   ├── resampling_methods.py     # Resampling schemes for the particle filter
+│   │   ├── particle_filter.py        # Bootstrap particle filter
+│   │   ├── kalman_filter.py          # Kalman filter + RTS smoother
+│   │   ├── pmmh.py                   # PMMH and BlockPMMH
+│   │   ├── kim_filter.py             # Kim filter (in progress)
+│   │   └── mle_estimator.py          # MLE via Kalman likelihood (in progress)
+│   ├── utils.py                      # Shared numerical utilities
+│   └── older_code/                   # Legacy implementations (superseded)
+├── notebooks/
+│   └── testing_estimation.ipynb      # Filter comparisons, N-particle sweep, resampling comparison
+└── data/
 ```
 
 ---
 
-## Source files
+## Models — `src/models/`
 
-### `src/particle_filter.py`
-Bootstrap particle filters for univariate latent state-space models.
+### `base.py`
 
-| Symbol | Description |
-|--------|-------------|
-| `_systematic_resample(weights)` | Systematic resampling using `np.random.uniform` (no explicit RNG — not reproducible) |
-| `systematic_resample(weights, rng)` | Same algorithm with an explicit `np.random.Generator` for reproducible seeds |
-| `particle_filter(y, phi, alpha, sigma, tau, N)` | Bootstrap PF for AR(1) latent state with Gaussian measurement noise |
-| `particle_filter_student_t(...)` | Same PF but with a Student-t measurement likelihood (robust to outliers) |
-| `particle_filter_ARMA(...)` | Bootstrap PF for a latent ARMA(1,3) state-space model; returns log-likelihood estimate |
-
-> Also contains two empty stub classes (`ResamplingMethod`, `StateSpaceModel`) that are superseded by `state_space_model.py`.
-
----
-
-### `src/state_space_model.py`
-Abstract base class for SSMs, a concrete linear Gaussian implementation, and inference utilities.
+Abstract base class for all state-space models.
 
 | Symbol | Description |
 |--------|-------------|
-| `StateSpaceModel` | Abstract base class defining the SSM interface (`transition`, `observation`, `log_*_density`) |
-| `SimpleLinearGaussianSSM` | 1-D AR(1) state, 1-D Gaussian observation; implements the full `StateSpaceModel` interface |
-| `regime_switching_SSM` | Multi-regime linear Gaussian SSM built on the same abstract class |
-| `logsumexp(a)` | Numerically stable log-sum-exp (scalar array) |
-| `log_normal_pdf_scalar(y, mean, var)` | Log density of N(mean, var), scalar |
-| `log_likelihood(y, x, alpha, tau, phi, sigma)` | Complete-data log-likelihood for the AR(1) SSM |
-| `pf_log_likelihood(y, phi, alpha, sigma, tau, N)` | Marginal log-likelihood estimate via bootstrap PF |
-| `neg_log_lik(params, y, N, n_avg)` | Negative log-likelihood averaged over `n_avg` PF runs; used with Nelder-Mead |
-| `kalman_negloglike_alpha_fixed(raw_params, y)` | Kalman-filter NLL with `alpha=1` fixed and parameters in unconstrained space |
-| `log_prior(phi, alpha, sigma, tau)` | Weakly informative prior for the linear SSM |
-| `pmmh(y, n_iter, N_particles, ...)` | Particle Marginal Metropolis-Hastings for the linear Gaussian SSM |
+| `StateSpaceModel` | Base class; defines the full SSM interface |
+| `.params` | Property returning `tuple(params_dict.values())` |
+| `.generate_data(T)` | Simulate `(states, observations, log_likelihood)` |
+| `.sample_initial_distribution()` | Sample `x_0`; should use stationary distribution where possible |
+| `.initial_density(x)` | Density `p(x_0 = x)` |
+| `.log_initial_density(x)` | Default: `log(initial_density(x))`; override with closed form |
+| `.transition(x_prev)` | Sample `x_t \| x_{t-1}` |
+| `.observation(x)` | Sample `y_t \| x_t` |
+| `.log_transition_density(x_next, x_prev)` | Log `p(x_t \| x_{t-1})` |
+| `.log_observation_density(y, x)` | Log `p(y_t \| x_t)` |
+| `.update_params(constrained_params)` | Update model attributes in-place; called by PMMH each iteration |
+| `.clear_state()` | Reset accumulated mutable runtime state; default no-op |
+| `.constrain_params(theta_unc)` | Map unconstrained vector → valid parameter object |
+| `.unconstrain_params(constrained_params)` | Inverse; returns flat `np.ndarray` |
+| `.describe()` | Human-readable model summary with equations |
 
 ---
 
-### `src/regime_switching.py`
-Two-regime bootstrap particle filter and PMMH for the model:
+### `linear_gaussian.py`
+
+| Class | Model |
+|-------|-------|
+| `SimpleLinearGaussianSSM(phi, alpha, sigma, tau)` | `x_t = φ x_{t-1} + ε_t`, `y_t = α x_t + ν_t`; 1-D latent, 1-D observation, Gaussian noise |
+| `LinearGaussianSSM(a, c, q, r, b, d, mu_0, p_0)` | `x_t = A x_{t-1} + b + ε_t`, `y_t = C x_t + d + ν_t`; general multivariate; initial distribution defaults to stationary via `solve_discrete_lyapunov` |
+
+Both implement the full `StateSpaceModel` interface including `update_params`.
+
+---
+
+### `linear_t.py`
+
+| Class | Model |
+|-------|-------|
+| `LinearTSSM(alpha, tau, phi, sigma, df)` | Same observation equation as `SimpleLinearGaussianSSM` but process noise is Student-t; useful for testing filter robustness to heavy tails |
+
+---
+
+### `linear_ARMA.py`
+
+| Class | Model |
+|-------|-------|
+| `LinearARMASSM(phi, alpha, c, theta_1, theta_2, theta_3, sigma, tau)` | ARMA(1,3) latent process lifted to Markov state `s_t = [x_t, ν_t, ν_{t-1}, ν_{t-2}]`; 4-D latent, 1-D observation |
+
+Overrides `clear_state()` to reset `s` and `s_history` between particle filter runs.
+
+---
+
+### `regime_switching.py`
+
+| Class | Model |
+|-------|-------|
+| `RegimeSwitchingSSM(A_list, C_list, Q_list, R_list, regime_transition_matrix)` | General K-regime Markov-switching linear Gaussian SSM; per-regime matrices `A_k, C_k, Q_k, R_k`; initial regime drawn from stationary distribution of the Markov chain |
+
+---
+
+### `regime_switching_macro.py`
+
+Full macroeconomic regime-switching model with a 6-dimensional augmented latent state and 4 observables.
 
 ```
-x_t = phi * x_{t-1} + sigma_{s_t} * eps_t
-y_t = x_t + tau * nu_t
+State:    z_t = [x_t, g_t*, u_t*, π_t^e, r_t*, x_{t-1}]
+Observed: y_t = [GDP growth, unemployment, inflation, nominal rate]
+
+Transition:  z_t = A z_{t-1} + a + ε_t,   ε_t ~ N(0, Q_{s_t})
+Observation: y_t = H z_t + b_t(i_{t-1}) + η_t,   η_t ~ N(0, R)
 ```
+
+Q is regime-specific; A, H, R are shared. The observation intercept `b_t` depends on the lagged nominal rate.
 
 | Symbol | Description |
 |--------|-------------|
-| `log_normal_pdf(y, mean, sd)` | Vectorized log N(mean, sd²) — note: takes `sd`, not variance |
-| `logsumexp(a)` | Same as in `state_space_model.py` |
-| `log_normal_pdf_scalar(y, mean, var)` | Same as in `state_space_model.py` |
-| `systematic_resample(weights, rng)` | Same as in `particle_filter.py` |
-| `stationary_regime_probs(p11, p22)` | Stationary distribution of the 2-state Markov chain |
-| `build_matrices(phi, sigma_j, mu)` | Builds (F, Q, H) for the augmented state `[x_t, x_{t-1}]` |
-| `default_initial_state(theta)` | Approximate stationary initial mean and covariance for the augmented state |
-| `bootstrap_pf_regime_switching(y, theta, N, ...)` | Bootstrap PF for the two-regime model; returns log-likelihood and filtered quantities |
-| `sigmoid`, `logit` | Transforms for probability parameters |
-| `constrain_theta(z)`, `unconstrain_theta(theta)` | Bijective transforms between constrained and unconstrained parameter spaces |
-| `_log_normal_kernel(x, mean, sd)` | Log-Gaussian kernel (normalizer-free) used in prior evaluation |
-| `log_prior_z(z, enforce_sigma_order)` | Weakly informative prior over unconstrained parameters |
-| `pf_log_likelihood_regime(y, theta, N, seed)` | PF log-likelihood wrapper for PMMH |
-| `pmmh_regime_switching(y, n_iter, N, ...)` | PMMH for the two-regime model in unconstrained space |
+| `ModelDims` | Dataclass: `n_regimes`, `n_state=6`, `n_obs=4`, `n_covariates` |
+| `RegimeStructure` | Dataclass: flags controlling which matrices are regime-specific |
+| `MacroParams` | Dataclass: all structural parameters (persistence, long-run means, slopes, Taylor rule, sigmas, transition intercepts) |
+| `RegimeSwitchingMacro` | Model class; matrix builders `build_A`, `build_Q`, `build_H`, `build_b`, `build_R`; `transition_probs` for (optionally covariate-dependent) regime transitions; `constrain_params` / `unconstrain_params` using tanh/exp transforms |
 
 ---
 
-### `src/rbpf.py`
-Rao-Blackwellized particle filter (RBPF) and PMMH for the 9-parameter growth model:
+## Estimation — `src/estimation/`
 
-```
-x_t  = phi * x_{t-1} + sigma_{s_t} * eps_t
-y_t  = g*_{s_t} + mu*(x_t - x_{t-1}) + tau * eta_t
-```
-
-Particles represent only the discrete regime sequence; the continuous state is integrated out per-particle via a Kalman filter, reducing Monte Carlo variance.
+### `resampling_methods.py`
 
 | Symbol | Description |
 |--------|-------------|
-| `_log_normal_kernel(x, mean, sd)` | Same as the one in `regime_switching.py` |
-| `constrain_theta_rbpf(z)`, `unconstrain_theta_rbpf(theta)` | Parameter transforms for the 9-parameter model (adds `g1`, `g2`, `mu`) |
-| `log_prior_rbpf(z, enforce_label_order)` | Prior with label-switching constraints (sigma2>sigma1, g1>g2) |
-| `rbpf_regime_growth(y, theta, N, ...)` | Core RBPF; returns log-likelihood, filtered regime probabilities, Rao-Blackwellized state moments |
-| `rbpf_log_likelihood(y, theta, N, seed)` | Log-likelihood wrapper for PMMH |
-| `pmmh_rbpf(y, n_iter, N, ...)` | PMMH using the RBPF likelihood |
+| `ResamplingMethod` | Abstract base; sets `resample_threshold = 0.5` |
+| `SystematicResampling` | Single uniform draw, O(N) — recommended default |
+| `StratifiedResampling` | One uniform draw per stratum |
+| `ResidualResampling` | Deterministic integer copies + multinomial residual |
+| `MultinomialResampling` | N independent draws; high variance, included as baseline |
+| `systematic_resample(weights, rng)` | Standalone function returning resampled indices; used internally by models |
 
 ---
 
-### `src/kim_filter.py`
-Kim (1994) approximate filter and MLE for the same 9-parameter growth model used in `rbpf.py`.
+### `particle_filter.py`
 
 | Symbol | Description |
 |--------|-------------|
-| `kalman_predict_update(m_prev, C_prev, y_t, regime_j, theta)` | Single Kalman predict-and-update step conditional on regime `j` |
-| `kim_filter_regime_growth(y, theta, ...)` | Kim filter: runs `K²` Kalman branches per time step, then collapses to `K` Gaussians |
-| `_kim_neg_loglik(z, y, enforce_label_order)` | Objective for MLE optimization |
-| `kim_mle(y, theta0, n_restarts, compute_se, ...)` | MLE via L-BFGS-B with multiple restarts; optionally computes SEs via finite-difference Hessian |
+| `ParticleFilter(model, N_particles, data, resample_method, seed)` | Bootstrap particle filter for any `StateSpaceModel` |
+| `.run_filter()` | Returns `(latent_state_estimate, particle_history, weight_history, resample_history, loglik)` |
+| `.ESS` | Property: effective sample size `1 / Σ w_i²` |
+
+Resamples when `ESS < resample_threshold × N`. Log-likelihood is accumulated as `Σ_t [logsumexp(log_w_t) − log N]`.
 
 ---
 
-### `src/regime_change_macro.py`
-Full 4-observable macroeconomic regime-switching model with a 6-dimensional latent state:
+### `kalman_filter.py`
 
-```
-z_t = [output gap, potential growth, natural unemployment, expected inflation, neutral rate, lagged output gap]
-y_t = [GDP growth, unemployment, inflation, nominal rate]
-```
-
-Supports K regimes (typically 2–4), covariate-dependent transition probabilities, and the full Kim filter/smoother/forecast pipeline.
+Exact inference for `LinearGaussianSSM` only.
 
 | Symbol | Description |
 |--------|-------------|
-| `ModelDims`, `RegimeStructure`, `MacroParams` | Dataclasses encoding model dimensions, parameter-sharing structure, and structural parameters |
-| `row_softmax(X)`, `symmetrize(M)` | Numerically stable softmax; symmetric matrix enforcer |
-| `kalman_predict(m, P, A, a, Q)` | Linear Kalman prediction step |
-| `kalman_update(m_pred, P_pred, y_t, H, b, R)` | Kalman update with Cholesky-based log-likelihood computation |
-| `RegimeMacroModel` | Model class; builds regime-specific matrices (A, Q, H, R, b) and the covariate-dependent transition matrix |
-| `KimFilterResult`, `kim_filter(model, y, covariates)` | Kim filter for the full macro model |
-| `SimulateResult`, `simulate(model, T, seed)` | Draw synthetic (y, z, s) paths from the model |
-| `KimSmootherResult`, `kim_smoother(model, filter_result, ...)` | Backward Kim smoother producing P(s_t \| y_{1:T}) and smoothed state moments |
-| `ForecastResult`, `forecast(model, filter_result, y_obs, n_ahead)` | Multi-step forecast with Gaussian mixture propagation and confidence intervals |
-| `collapse_gaussian_mixture(means, covs, weights)` | Moment-match a Gaussian mixture to a single Gaussian |
-| `logsumexp_2d(X)` | Log-sum-exp over a 2-D array |
-| `ParamPacker` | Abstract base for converting optimizer vectors to/from `MacroParams` (must be subclassed) |
-| `negative_loglik(theta_raw, packer, y, covariates)` | Objective function for MLE |
-| `fit_mle(y, dims, theta0_raw, ...)` | MLE driver using L-BFGS-B |
+| `KalmanFilter(model, data)` | Kalman filter + RTS smoother |
+| `.run_filter()` | Returns `(filtered_means, filtered_covs, loglik)`; stores `predicted_means/covs`, `innovations`, `innovation_covs` |
+| `.run_smoother()` | RTS backward pass; returns `(smoothed_means, smoothed_covs)`; must call `run_filter()` first |
+
+Uses Cholesky factorization of the innovation covariance for numerical stability; applies the Joseph-form covariance update to guarantee symmetry and PSD at each step.
 
 ---
 
-### `src/analysis_utils.py`
-Utilities for exploratory time-series analysis.
+### `pmmh.py`
+
+Particle Marginal Metropolis-Hastings. Requires the model to implement `constrain_params`, `unconstrain_params`, and `update_params`.
 
 | Symbol | Description |
 |--------|-------------|
-| `compare_arima_models(y, p_values, d_values, q_values, ...)` | Fits all `ARIMA(p,d,q)` combinations, computes AIC/BIC/HQIC, and runs a Ljung-Box test; returns a `DataFrame` sorted by BIC |
+| `PMMH(model, particle_filter, n_iter, step_sizes, theta0, log_prior, seed)` | Standard PMMH; Gaussian random walk in unconstrained space |
+| `.run()` | Returns `(chain, loglik_chain, accepted)`; `chain` has shape `(n_iter+1, d)` |
+| `BlockPMMH(..., blocks)` | Block-update PMMH; cycles through parameter index groups each iteration; each block is accepted/rejected independently |
+
+`theta0` must be in unconstrained space. Use `model.unconstrain_params(...)` to obtain the initial vector. The particle filter's history is cleared automatically before each likelihood evaluation.
 
 ---
 
-### `src/utils.py`
-Shared low-level numerical helpers.
+### `kim_filter.py` *(in progress)*
+
+Kim (1994) approximate filter for regime-switching models with linear Gaussian structure. Reduces Monte Carlo variance by marginalizing the continuous state analytically.
+
+---
+
+### `mle_estimator.py` *(in progress)*
+
+Maximum likelihood estimation via the Kalman-filter log-likelihood for linear Gaussian models.
+
+---
+
+## Utilities — `src/utils.py`
 
 | Symbol | Description |
 |--------|-------------|
-| `logsumexp(a, axis)` | Numerically stable log-sum-exp with optional `axis` argument |
-| `softmax(x)` | Row-wise softmax |
-| `log_normal_pdf_scalar(x, mean, var)` | Log density of N(mean, var), scalar |
+| `logsumexp(a, axis)` | Numerically stable `log Σ exp(a)` with optional axis |
+| `softmax(x)` | Row-wise softmax (not numerically stabilized) |
+| `row_softmax(x)` | Numerically stable row-wise softmax; used for regime transition probabilities |
+| `symmetrize(m)` | Returns `(m + m.T) / 2`; used to enforce covariance symmetry |
+| `log_normal_pdf_scalar(y, mean, var)` | Log density of `N(mean, var)` for scalars |
+| `log_normal_pdf(y, mean, sd)` | Vectorized log density; takes `sd`, not variance |
 
 ---
 
-### `data/synthetic_data.py`
-Functions for generating ground-truth data used in testing.
+## Notebooks
 
-| Symbol | Description |
-|--------|-------------|
-| `generate_synthetic_data(T, A, C, Q, R)` | Simulates a linear Gaussian SSM; validates stationarity of A |
-| `generate_regime_switching_data(T, A_list, C_list, Q_list, R_list, P, pi)` | Simulates a Markov-switching SSM with per-regime matrices |
+| Notebook | Contents |
+|----------|----------|
+| `testing_estimation.ipynb` | Single-run particle filter; Monte Carlo RMSE; effect of particle count on RMSE and log-likelihood variance; noise sensitivity; resampling method comparison; `LinearTSSM` misspecification test; `LinearARMASSM` |
 
 ---
 
-## Model hierarchy (top-down)
+## Legacy code — `src/older_code/`
 
-```
-regime_change_macro.py   ← most general macro model (6-state, 4-obs, K regimes)
-        │
-        ├── kim_filter.py        ← 9-param growth model, Kim filter + MLE
-        │        └── rbpf.py     ← 9-param growth model, RBPF + PMMH
-        │
-        └── regime_switching.py  ← 6-param two-regime model, bootstrap PF + PMMH
-                 └── particle_filter.py  ← 4-param AR(1), bootstrap PF
-```
+Earlier monolithic implementations, kept for reference. Superseded by the `models/` + `estimation/` architecture.
 
-`state_space_model.py` defines the SSM abstract interface used by the simpler models; `utils.py` provides shared numerical primitives that should be imported across all other files.
+| File | Description |
+|------|-------------|
+| `particle_filter.py` | Standalone bootstrap PF functions |
+| `state_space_model.py` | Combined SSM + PMMH in a single file |
+| `regime_switching.py` | Two-regime bootstrap PF + PMMH |
+| `rbpf.py` | Rao-Blackwellized PF for a 9-parameter growth model |
+| `kim_filter.py` | Kim filter + MLE for the growth model |
+| `regime_change_macro.py` | Full macro model with Kim filter, smoother, and forecast |

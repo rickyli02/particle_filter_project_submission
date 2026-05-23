@@ -173,6 +173,21 @@ class RegimeSwitchingMacro(StateSpaceModel):
             f"  Obs sigmas: {p.obs_sigmas}"
         )
 
+    def update_params(self, constrained_params: 'MacroParams'):
+        """Update model from a constrained MacroParams object."""
+        self.macro_params = constrained_params
+        p = constrained_params
+        self.macro_params_dict = {
+            'rho_x': p.rho_x, 'rho_g': p.rho_g, 'rho_u': p.rho_u,
+            'rho_pi': p.rho_pi, 'rho_r': p.rho_r,
+            'g_bar': p.g_bar, 'u_bar': p.u_bar, 'pi_bar': p.pi_bar, 'r_bar': p.r_bar,
+            'lambda_r': p.lambda_r, 'beta_u': p.beta_u, 'kappa': p.kappa,
+            'rho_i': p.rho_i, 'phi_pi': p.phi_pi, 'phi_x': p.phi_x,
+            'pi_target': p.pi_target,
+        }
+        if p.init_regime_probs is None:
+            self.regime_probs_stationary = self._solve_stationary_regime_dist()
+
     # ── validation ────────────────────────────────────────────────────────────
 
     def _validate_params(self):

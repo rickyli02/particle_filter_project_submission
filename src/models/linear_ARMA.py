@@ -90,6 +90,26 @@ class LinearARMASSM(StateSpaceModel):
             f"  Observation: y_t = {self.alpha} * x_t + eps_t,  eps_t ~ N(0, {self.tau}^2)"
         )
 
+    def update_params(self, constrained_params):
+        phi, alpha, c, theta_1, theta_2, theta_3, sigma, tau = constrained_params
+        self.phi = phi
+        self.alpha = alpha
+        self.c = c
+        self.theta_1 = theta_1
+        self.theta_2 = theta_2
+        self.theta_3 = theta_3
+        self.sigma = sigma
+        self.tau = tau
+        self.params_dict = {
+            'phi': phi, 'alpha': alpha, 'c': c,
+            'theta_1': theta_1, 'theta_2': theta_2, 'theta_3': theta_3,
+            'sigma': sigma, 'tau': tau,
+        }
+
+    def clear_state(self):
+        self.s = None
+        self.s_history = []
+
     def transition(self, s_prev):
         x_prev, nu_prev, nu_prev_1, nu_prev_2 = s_prev
         nu_t = self.rng.normal(0, self.sigma)

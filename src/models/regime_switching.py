@@ -40,6 +40,15 @@ class RegimeSwitchingSSM(StateSpaceModel):
             f"  Stationary regime probs: {self.regime_probabilities_stationary}"
         )
 
+    def update_params(self, constrained_params):
+        # constrained_params: dict with keys matching constructor args
+        self.A_list = constrained_params['A_list']
+        self.C_list = constrained_params['C_list']
+        self.Q_list = constrained_params['Q_list']
+        self.R_list = constrained_params['R_list']
+        self.regime_transition_matrix = constrained_params['regime_transition_matrix']
+        self.regime_probabilities_stationary = self.solve_stationary_distribution()
+
     def solve_stationary_distribution(self):
         # Solve for the stationary distribution of the regime Markov chain
 

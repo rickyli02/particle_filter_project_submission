@@ -38,6 +38,15 @@ class LinearTSSM(StateSpaceModel):
             f"  Observation: y_t = {self.alpha} * x_t + nu_t,                      nu_t  ~ N(0, {self.tau}^2)"
         )
 
+    def update_params(self, constrained_params):
+        alpha, tau, phi, sigma, df = constrained_params
+        self.alpha = alpha
+        self.tau = tau
+        self.phi = phi
+        self.sigma = sigma
+        self.df = df
+        self.params_dict = {'alpha': alpha, 'tau': tau, 'phi': phi, 'sigma': sigma, 'df': df}
+
     def sample_initial_distribution(self):
         # stationary distribution, x_0 ~ t(df, 0, sigma^2 / (1 - phi^2))
         scale = np.sqrt(self.sigma ** 2 / (1 - self.phi ** 2))

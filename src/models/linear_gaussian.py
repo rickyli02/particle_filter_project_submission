@@ -37,6 +37,14 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
             f"  Initial:     x_0 ~ N(0, {self.stationary_var:.6g})  [stationary]"
         )
     
+    def update_params(self, constrained_params):
+        phi, alpha, sigma, tau = constrained_params
+        self.phi = phi
+        self.alpha = alpha
+        self.sigma = sigma
+        self.tau = tau
+        self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma': sigma, 'tau': tau}
+
     @property
     def stationary_var(self):
         return self.sigma ** 2 / (1 - self.phi ** 2) if abs(self.phi) < 1 else np.inf
@@ -121,6 +129,17 @@ class LinearGaussianSSM(StateSpaceModel):
             f"  Q (diag): {q_str}\n"
             f"  R (diag): {r_str}"
         )
+
+    def update_params(self, constrained_params):
+        # constrained_params: dict with keys 'A', 'C', 'Q', 'R', 'b', 'd'
+        self.A = np.atleast_2d(constrained_params['A'])
+        self.C = np.atleast_2d(constrained_params['C'])
+        self.Q = np.atleast_2d(constrained_params['Q'])
+        self.R = np.atleast_2d(constrained_params['R'])
+        self.b = np.asarray(constrained_params['b'], dtype=float)
+        self.d = np.asarray(constrained_params['d'], dtype=float)
+        self.params_dict = {'A': self.A, 'C': self.C, 'Q': self.Q, 'R': self.R,
+                            'b': self.b, 'd': self.d}
 
     def _stationary_distribution(self):
         """Solve the discrete Lyapunov equation P = A P A' + Q for the stationary covariance."""
