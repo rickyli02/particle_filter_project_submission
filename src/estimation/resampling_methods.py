@@ -1,3 +1,4 @@
+import numpy as np
 
 class ResamplingMethod:
     def __init__(self, seed=None):
@@ -78,3 +79,17 @@ class SystematicResampling(ResamplingMethod):
         return particles[self._get_indices(weights)]
 
 
+def systematic_resample(weights, rng):
+    """Standalone systematic resampling. Returns resampled indices."""
+    N = len(weights)
+    positions = (rng.random() + np.arange(N)) / N
+    cumsum = np.cumsum(weights)
+    indices = np.zeros(N, dtype=int)
+    i = j = 0
+    while i < N:
+        if positions[i] < cumsum[j]:
+            indices[i] = j
+            i += 1
+        else:
+            j += 1
+    return indices

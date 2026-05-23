@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.stats as stats
 from state_space_model import StateSpaceModel
-from utils import systematic_resample
+from estimation.resampling_methods import systematic_resample
 
 class ResamplingMethod:
     pass

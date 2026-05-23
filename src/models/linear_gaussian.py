@@ -1,5 +1,6 @@
 import numpy as np
-from utils import log_normal_pdf_scalar, logsumexp, systematic_resample
+from utils import log_normal_pdf_scalar
+from estimation.resampling_methods import systematic_resample
 from models.base import StateSpaceModel
 
 

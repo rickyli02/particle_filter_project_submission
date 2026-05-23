@@ -1,5 +1,6 @@
 import numpy as np
-from utils import systematic_resample, log_normal_pdf_scalar, logsumexp
+from utils import log_normal_pdf_scalar, logsumexp
+from estimation.resampling_methods import systematic_resample
 from regime_switching import (
     stationary_regime_probs, build_matrices,
     default_initial_state, sigmoid, logit,

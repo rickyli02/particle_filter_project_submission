@@ -60,9 +60,11 @@ class StateSpaceModel:
 
         states[0] = self.sample_initial_distribution()
         observations[0] = self.observation(states[0])
+        log_likelihood = self.log_observation_density(observations[0], states[0])
 
         for t in range(1, num_time_steps):
             states[t] = self.transition(states[t-1])
             observations[t] = self.observation(states[t])
+            log_likelihood += self.log_observation_density(observations[t], states[t])
 
-        return states, observations
+        return states, observations, log_likelihood

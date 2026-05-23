@@ -37,8 +37,8 @@ tau : float
 '''
 
 import numpy as np
-from utils import logsumexp
-from base import StateSpaceModel
+from utils import logsumexp, log_normal_pdf_scalar
+from models.base import StateSpaceModel
 
 class LinearARMASSM(StateSpaceModel):
     def __init__(self, phi, alpha, c, theta_1, theta_2, theta_3, sigma, tau, seed=None):

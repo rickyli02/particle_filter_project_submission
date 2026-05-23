@@ -1,5 +1,6 @@
 import numpy as np
-from utils import logsumexp, log_normal_pdf_scalar, log_normal_pdf, systematic_resample
+from utils import logsumexp, log_normal_pdf_scalar, log_normal_pdf
+from estimation.resampling_methods import systematic_resample
 
 
 # ---------------------------------------------------------------------------
