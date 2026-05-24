@@ -61,4 +61,7 @@ def rmse(true, est):
     """Root mean squared error between two array-like sequences."""
     return np.sqrt(np.mean((np.asarray(true) - np.asarray(est)) ** 2))
 
-
+def _logsumexp2d(a: np.ndarray) -> float:
+    """Numerically stable logsumexp over all elements of a 2-D array."""
+    a_max = a.max()
+    return float(a_max + np.log(np.exp(a - a_max).sum()))

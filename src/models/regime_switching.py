@@ -31,7 +31,7 @@ class RegimeSwitchingSSM(StateSpaceModel):
     def describe(self):
         return (
             f"{self.__class__.__name__}\n"
-            f"  Regime-switching linear Gaussian SSM\n"
+            f"  Regime-switching linear Gaussian SSM (No parameters shared)\n"
             f"  State dim: {self.state_dim},  Obs dim: {self.obs_dim},  Regimes: {self.n_regimes}\n"
             f"  Latent state: (x_t, s_t)  where s_t in {{0, ..., {self.n_regimes - 1}}}\n"
             f"  Transition:  x_t | s_t ~ N(A_{{s_t}} x_{{t-1}},  Q_{{s_t}})\n"
