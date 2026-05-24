@@ -40,3 +40,25 @@ def log_normal_pdf(y, mean, sd):
     return -0.5 * np.log(2.0 * np.pi * sd ** 2) - 0.5 * ((y - mean) / sd) ** 2
 
 
+# ── particle filter diagnostics ───────────────────────────────────────────────
+
+def filtered_trajectory(pf, state_idx=0):
+    """Weighted posterior mean of state component `state_idx` at each time step."""
+    out = []
+    for particles, weights in zip(pf.particle_history, pf.weight_history):
+        w = weights.flatten()
+        vals = particles if particles.ndim == 1 else particles[:, state_idx]
+        out.append(np.average(vals, weights=w))
+    return np.array(out)
+
+
+def ess_trajectory(pf):
+    """Effective sample size 1/Σw² at each time step."""
+    return np.array([1.0 / np.sum(w.flatten() ** 2) for w in pf.weight_history])
+
+
+def rmse(true, est):
+    """Root mean squared error between two array-like sequences."""
+    return np.sqrt(np.mean((np.asarray(true) - np.asarray(est)) ** 2))
+
+

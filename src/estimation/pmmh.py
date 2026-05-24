@@ -49,7 +49,7 @@ class PMMH:
             )
 
         self.model = model
-        self.pf = particle_filter
+        self.pf = particle_filter # we can switch the particle filter, e.g. basic PF, RBPF
         self.n_iter = n_iter
         self.log_prior = log_prior if log_prior is not None else lambda _: 0.0
         self.seed = seed

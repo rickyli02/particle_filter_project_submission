@@ -11,9 +11,6 @@ class StateSpaceModel:
         # random seed for reproducibility
         self.seed = seed if seed is not None else 42
 
-        check_params_validity()  # raises error message if params are invalid
-        self.rng = np.random.default_rng(seed)
-
     def __repr__(self):
         return f"{self.__class__.__name__}(state_dim={self.state_dim}, obs_dim={self.obs_dim})"
 
@@ -32,8 +29,7 @@ class StateSpaceModel:
         return tuple(self.params_dict.values())
 
     def check_params_validity(self):
-        # raises error message if params are invalid
-        raise NotImplementedError
+        pass  # override in subclasses to enforce model-specific constraints
 
     def constrain_params(self, unconstrained_params):
         raise NotImplementedError

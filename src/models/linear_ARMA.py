@@ -69,6 +69,7 @@ class LinearARMASSM(StateSpaceModel):
 
         self.seed = seed if seed is not None else 42
         self.rng = np.random.default_rng(seed)
+        self.check_params_validity()
 
     def __repr__(self):
         return (
@@ -90,6 +91,28 @@ class LinearARMASSM(StateSpaceModel):
             f"  Observation: y_t = {self.alpha} * x_t + eps_t,  eps_t ~ N(0, {self.tau}^2)"
         )
 
+    def check_params_validity(self):
+        from statsmodels.tsa.arima_process import ArmaProcess
+        if self.sigma <= 0:
+            raise ValueError(f"sigma={self.sigma}: process noise std must be positive.")
+        if self.tau <= 0:
+            raise ValueError(f"tau={self.tau}: observation noise std must be positive.")
+        ar = [1, -self.phi]
+        ma = [1, self.theta_1, self.theta_2, self.theta_3]
+        arma = ArmaProcess(ar=ar, ma=ma)
+        if not arma.isstationary:
+            raise ValueError(
+                f"phi={self.phi}: AR(1) polynomial is not stationary/causal "
+                f"(require |phi| < 1, got root at z={1/self.phi:.4f})."
+            )
+        if not arma.isinvertible:
+            # Real time-series may have non-invertible ARMA processes.
+            # this method only prints a warning without forbidding parameter values that lead to non-stationary ARMA processes
+            print(
+                f"theta=({self.theta_1}, {self.theta_2}, {self.theta_3}): "
+                f"MA(3) polynomial is not invertible (all roots must lie outside the unit circle)."
+            )
+
     def update_params(self, constrained_params):
         phi, alpha, c, theta_1, theta_2, theta_3, sigma, tau = constrained_params
         self.phi = phi
@@ -105,6 +128,7 @@ class LinearARMASSM(StateSpaceModel):
             'theta_1': theta_1, 'theta_2': theta_2, 'theta_3': theta_3,
             'sigma': sigma, 'tau': tau,
         }
+        self.check_params_validity()
 
     def clear_state(self):
         self.s = None

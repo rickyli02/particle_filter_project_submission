@@ -17,8 +17,9 @@ class RegimeSwitchingSSM(StateSpaceModel):
 
         pi = self.solve_stationary_distribution()
         self.regime_probabilities_stationary = pi[:-1]
-        
+
         self.rng = np.random.default_rng(seed)
+        self.check_params_validity()
 
     def __repr__(self):
         return (
@@ -40,6 +41,20 @@ class RegimeSwitchingSSM(StateSpaceModel):
             f"  Stationary regime probs: {self.regime_probabilities_stationary}"
         )
 
+    def check_params_validity(self):
+        p = self.regime_transition_matrix
+        if np.any(p < 0):
+            raise ValueError("regime_transition_matrix has negative entries.")
+        if not np.allclose(p.sum(axis=1), 1.0):
+            raise ValueError("regime_transition_matrix rows must sum to 1.")
+        for i, (Q, R) in enumerate(zip(self.Q_list, self.R_list)):
+            if np.any(np.linalg.eigvalsh(Q) < -1e-10):
+                raise ValueError(f"Q_list[{i}] is not positive semi-definite.")
+            try:
+                np.linalg.cholesky(R)
+            except np.linalg.LinAlgError:
+                raise ValueError(f"R_list[{i}] is not positive definite.")
+
     def update_params(self, constrained_params):
         # constrained_params: dict with keys matching constructor args
         self.A_list = constrained_params['A_list']
@@ -48,6 +63,7 @@ class RegimeSwitchingSSM(StateSpaceModel):
         self.R_list = constrained_params['R_list']
         self.regime_transition_matrix = constrained_params['regime_transition_matrix']
         self.regime_probabilities_stationary = self.solve_stationary_distribution()
+        self.check_params_validity()
 
     def solve_stationary_distribution(self):
         # Solve for the stationary distribution of the regime Markov chain

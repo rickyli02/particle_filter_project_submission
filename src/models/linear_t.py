@@ -21,6 +21,17 @@ class LinearTSSM(StateSpaceModel):
         self.params_dict = {'alpha': alpha, 'tau': tau, 'phi': phi, 'sigma': sigma, 'df': df}
 
         self.rng = np.random.default_rng(seed)
+        self.check_params_validity()
+
+    def check_params_validity(self):
+        if abs(self.phi) >= 1:
+            raise ValueError(f"phi={self.phi}: latent process is not stationary (require |phi| < 1).")
+        if self.sigma <= 0:
+            raise ValueError(f"sigma={self.sigma}: process noise scale must be positive.")
+        if self.tau <= 0:
+            raise ValueError(f"tau={self.tau}: observation noise std must be positive.")
+        if self.df <= 0:
+            raise ValueError(f"df={self.df}: degrees of freedom must be positive.")
 
     def __repr__(self):
         return (
@@ -46,6 +57,7 @@ class LinearTSSM(StateSpaceModel):
         self.sigma = sigma
         self.df = df
         self.params_dict = {'alpha': alpha, 'tau': tau, 'phi': phi, 'sigma': sigma, 'df': df}
+        self.check_params_validity()
 
     def sample_initial_distribution(self):
         # stationary distribution, x_0 ~ t(df, 0, sigma^2 / (1 - phi^2))

@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import multivariate_normal
-from scipy.linalg import solve_discrete_lyapunov
-from utils import log_normal_pdf_scalar
+from scipy.linalg import solve_discrete_lyapunov, cho_factor, cho_solve
+from utils import log_normal_pdf_scalar, symmetrize
 from estimation.resampling_methods import systematic_resample
 from models.base import StateSpaceModel
 
@@ -19,7 +19,16 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
         self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma': sigma, 'tau': tau}
 
         self.rng = np.random.default_rng(seed)
-    
+        self.check_params_validity()
+
+    def check_params_validity(self):
+        if abs(self.phi) >= 1:
+            raise ValueError(f"phi={self.phi}: latent process is not stationary (require |phi| < 1).")
+        if self.sigma <= 0:
+            raise ValueError(f"sigma={self.sigma}: process noise std must be positive.")
+        if self.tau <= 0:
+            raise ValueError(f"tau={self.tau}: observation noise std must be positive.")
+
     def __repr__(self):
         return (
             f"SimpleLinearGaussianSSM("
@@ -44,6 +53,7 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
         self.sigma = sigma
         self.tau = tau
         self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma': sigma, 'tau': tau}
+        self.check_params_validity()
 
     @property
     def stationary_var(self):
@@ -77,6 +87,45 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
     def log_observation_density(self, y, x):
         return log_normal_pdf_scalar(y, self.alpha * x, self.tau ** 2)
 
+    def log_likelihood(self, y):
+        """
+        Exact log p(y_{0:T-1} | theta) available for linear Gaussian SSM
+        Computed via scalar Kalman filter recursion.
+
+        y_t | y_{0:t-1} ~ N(alpha * mu_{t|t-1},  alpha^2 * P_{t|t-1} + tau^2)
+
+        Unconditional marginal covariance (used as a sanity reference):
+            E[y_t] = 0
+            Cov(y_s, y_t) = phi^|t-s| * sigma^2/(1-phi^2) + tau^2 * 1_{s=t}
+        """
+        y = np.asarray(y, dtype=float).ravel()
+        T = len(y)
+
+        mu = 0.0
+        P = self.stationary_var   # sigma^2 / (1 - phi^2)
+
+        loglik = 0.0
+        for t in range(T):
+            # predicted observation variance and innovation
+            S = self.alpha ** 2 * P + self.tau ** 2
+            v = y[t] - self.alpha * mu
+
+            loglik -= 0.5 * (np.log(2.0 * np.pi * S) + v ** 2 / S)
+
+            # update (Joseph form keeps P non-negative)
+            K  = self.alpha * P / S
+            mu = mu + K * v
+            P  = (1.0 - K * self.alpha) ** 2 * P + K ** 2 * self.tau ** 2
+
+            # predict for t+1
+            if t < T - 1:
+                mu = self.phi * mu
+                P  = self.phi ** 2 * P + self.sigma ** 2
+
+        return loglik
+
+
+
 
 # General multivariate linear Gaussian state-space model
 #
@@ -108,6 +157,28 @@ class LinearGaussianSSM(StateSpaceModel):
 
         self.params_dict = {'A': self.A, 'C': self.C, 'Q': self.Q, 'R': self.R,
                             'b': self.b, 'd': self.d}
+        self.check_params_validity()
+
+    def check_params_validity(self):
+        n, m = self.state_dim, self.obs_dim
+        if self.A.shape != (n, n):
+            raise ValueError(f"A shape {self.A.shape} must be ({n}, {n}).")
+        if self.C.shape != (m, n):
+            raise ValueError(f"C shape {self.C.shape} must be ({m}, {n}).")
+        if self.Q.shape != (n, n):
+            raise ValueError(f"Q shape {self.Q.shape} must be ({n}, {n}).")
+        if self.R.shape != (m, m):
+            raise ValueError(f"R shape {self.R.shape} must be ({m}, {m}).")
+        if not np.allclose(self.Q, self.Q.T):
+            raise ValueError("Q must be symmetric.")
+        if not np.allclose(self.R, self.R.T):
+            raise ValueError("R must be symmetric.")
+        if np.any(np.linalg.eigvalsh(self.Q) < -1e-10):
+            raise ValueError("Q must be positive semi-definite.")
+        try:
+            np.linalg.cholesky(self.R)
+        except np.linalg.LinAlgError:
+            raise ValueError("R must be positive definite.")
 
     def __repr__(self):
         return (
@@ -140,6 +211,7 @@ class LinearGaussianSSM(StateSpaceModel):
         self.d = np.asarray(constrained_params['d'], dtype=float)
         self.params_dict = {'A': self.A, 'C': self.C, 'Q': self.Q, 'R': self.R,
                             'b': self.b, 'd': self.d}
+        self.check_params_validity()
 
     def _stationary_distribution(self):
         """Solve the discrete Lyapunov equation P = A P A' + Q for the stationary covariance."""
@@ -178,3 +250,37 @@ class LinearGaussianSSM(StateSpaceModel):
     def log_observation_density(self, y, x):
         mean = self.C @ np.asarray(x, dtype=float) + self.d
         return multivariate_normal.logpdf(y, mean=mean, cov=self.R)
+
+    def log_likelihood(self, y):
+        """Exact log p(y_{0:T-1} | theta) via multivariate Kalman filter recursion."""
+        y = np.asarray(y, dtype=float)
+        if y.ndim == 1:
+            y = y[:, None]
+        T, m = y.shape
+
+        A, C, Q, R, b, d = self.A, self.C, self.Q, self.R, self.b, self.d
+        n = self.state_dim
+        eye_n = np.eye(n)
+
+        mu = self.mu_0.copy()
+        P  = self.P_0.copy()
+        loglik = 0.0
+
+        for t in range(T):
+            v  = y[t] - C @ mu - d
+            S  = symmetrize(C @ P @ C.T + R)
+
+            cf        = cho_factor(S)
+            log_det_s = 2.0 * np.sum(np.log(np.diag(cf[0])))
+            loglik   -= 0.5 * (m * np.log(2.0 * np.pi) + log_det_s + v @ cho_solve(cf, v))
+
+            K         = cho_solve(cf, C @ P).T          # (n × m)
+            i_minus_kc = eye_n - K @ C
+            mu = mu + K @ v
+            P  = symmetrize(i_minus_kc @ P @ i_minus_kc.T + K @ R @ K.T)
+
+            if t < T - 1:
+                mu = A @ mu + b
+                P  = symmetrize(A @ P @ A.T + Q)
+
+        return loglik

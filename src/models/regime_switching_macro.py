@@ -187,6 +187,10 @@ class RegimeSwitchingMacro(StateSpaceModel):
         }
         if p.init_regime_probs is None:
             self.regime_probs_stationary = self._solve_stationary_regime_dist()
+        self.check_params_validity()
+
+    def check_params_validity(self):
+        self._validate_params()
 
     # ── validation ────────────────────────────────────────────────────────────
 
