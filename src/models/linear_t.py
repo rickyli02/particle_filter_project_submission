@@ -49,6 +49,15 @@ class LinearTSSM(StateSpaceModel):
             f"  Observation: y_t = {self.alpha} * x_t + nu_t,                      nu_t  ~ N(0, {self.tau}^2)"
         )
 
+    def unconstrain_params(self, constrained_params):
+        alpha, tau, phi, sigma, df = constrained_params
+        return np.array([alpha, np.log(tau), np.arctanh(phi), np.log(sigma), np.log(df)])
+
+    def constrain_params(self, unconstrained_params):
+        u_alpha, u_tau, u_phi, u_sigma, u_df = unconstrained_params
+        return [float(u_alpha), float(np.exp(u_tau)), float(np.tanh(u_phi)),
+                float(np.exp(u_sigma)), float(np.exp(u_df))]
+
     def update_params(self, constrained_params):
         alpha, tau, phi, sigma, df = constrained_params
         self.alpha = alpha

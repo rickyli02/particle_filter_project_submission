@@ -76,7 +76,7 @@ Abstract base class for all state-space models.
 | `SimpleLinearGaussianSSM(phi, alpha, sigma, tau)` | `x_t = φ x_{t-1} + ε_t`, `y_t = α x_t + ν_t`; 1-D latent, 1-D observation, Gaussian noise |
 | `LinearGaussianSSM(a, c, q, r, b, d, mu_0, p_0)` | `x_t = A x_{t-1} + b + ε_t`, `y_t = C x_t + d + ν_t`; general multivariate; initial distribution defaults to stationary via `solve_discrete_lyapunov` |
 
-Both implement the full `StateSpaceModel` interface including `update_params`.
+Both implement the full `StateSpaceModel` interface including `update_params`, `constrain_params` / `unconstrain_params` (tanh for `phi`, log for positive scales, identity for `alpha`), and `log_likelihood(data)` (Kalman filter recursion, exact marginal likelihood).
 
 ---
 
@@ -84,7 +84,7 @@ Both implement the full `StateSpaceModel` interface including `update_params`.
 
 | Class | Model |
 |-------|-------|
-| `LinearTSSM(alpha, tau, phi, sigma, df)` | Same observation equation as `SimpleLinearGaussianSSM` but process noise is Student-t; useful for testing filter robustness to heavy tails |
+| `LinearTSSM(alpha, tau, phi, sigma, df)` | Same observation equation as `SimpleLinearGaussianSSM` but process noise is Student-t; useful for testing filter robustness to heavy tails. Implements `constrain_params` / `unconstrain_params` (tanh for `phi`, log for `tau`, `sigma`, `df`) |
 
 ---
 
@@ -190,9 +190,18 @@ Kim (1994) approximate filter for regime-switching models with linear Gaussian s
 
 ---
 
-### `mle_estimator.py` *(in progress)*
+### `mle_estimator.py`
 
-Maximum likelihood estimation via the Kalman-filter log-likelihood for linear Gaussian models.
+Maximum likelihood estimation for state-space models with a tractable log-likelihood.
+
+| Symbol | Description |
+|--------|-------------|
+| `MLEEstimator(model, data, method, n_restarts, restart_std, seed)` | Optimizes `model.log_likelihood(data)` in the unconstrained parameter space via `scipy.optimize.minimize` (default `L-BFGS-B`); supports random restarts |
+| `.fit(theta0)` | Run optimization; `theta0` defaults to `model.unconstrain_params(model.params)`. Returns `MLEResult` |
+| `.compute_std_errors(eps)` | Numerical Hessian at the MLE → delta method to return standard errors in the *constrained* space |
+| `MLEResult` | Dataclass: `constrained_params`, `unconstrained_params`, `loglik`, `success`, `n_evals`, `message`, `std_errors`; `.summary()` prints a formatted parameter table |
+
+Requires the model to implement `log_likelihood(data)`, `constrain_params`, `unconstrain_params`, and `update_params`. Raises `ValueError` for models without `log_likelihood`.
 
 ---
 
@@ -213,7 +222,8 @@ Maximum likelihood estimation via the Kalman-filter log-likelihood for linear Ga
 
 | Notebook | Contents |
 |----------|----------|
-| `testing_estimation.ipynb` | Single-run particle filter; Monte Carlo RMSE; effect of particle count on RMSE and log-likelihood variance; noise sensitivity; resampling method comparison; `LinearTSSM` misspecification test; `LinearARMASSM` |
+| `testing_estimation.ipynb` | Single-run particle filter; Monte Carlo RMSE; effect of particle count on RMSE and log-likelihood variance; noise sensitivity; empirical N-particles vs τ grid study (RMSE and log-likelihood heatmaps, KF floor comparison); resampling method comparison; `LinearTSSM` misspecification test; `LinearARMASSM` |
+| `parameter_estimation.ipynb` | MLE via Kalman log-likelihood; PMMH posterior inference; effect of N_particles on PMMH (α·σ identification ridge); effect of observation noise on parameter recoverability; model misspecification (Gaussian estimator on t or ARMA data) |
 
 ---
 

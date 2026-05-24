@@ -81,6 +81,15 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
             x = np.array([x])
         return self.alpha * x + self.rng.normal(0, self.tau, size=x.shape)
 
+    def unconstrain_params(self, constrained_params):
+        phi, alpha, sigma, tau = constrained_params
+        return np.array([np.arctanh(phi), alpha, np.log(sigma), np.log(tau)])
+
+    def constrain_params(self, unconstrained_params):
+        u_phi, u_alpha, u_sigma, u_tau = unconstrained_params
+        return [float(np.tanh(u_phi)), float(u_alpha),
+                float(np.exp(u_sigma)), float(np.exp(u_tau))]
+
     def log_transition_density(self, x_next, x_prev):
         return log_normal_pdf_scalar(x_next, self.phi * x_prev, self.sigma ** 2)
 
