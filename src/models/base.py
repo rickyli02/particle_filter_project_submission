@@ -1,7 +1,9 @@
+from abc import ABC, abstractmethod
+
 import numpy as np
 
-# Abstract class for state-space models
-class StateSpaceModel:
+
+class StateSpaceModel(ABC):
     def __init__(self, seed=None, state_dim=None, obs_dim=None):
         # include model parameters
         self.params_dict = {}
@@ -81,10 +83,11 @@ class StateSpaceModel:
         # Reset any accumulated mutable runtime state between runs. Default: no-op.
         pass
 
+    @abstractmethod
     def sample_initial_distribution(self):
         # Sample x_0 from the initial distribution.
         # Should use the stationary distribution where possible.
-        raise NotImplementedError
+        ...
 
     def initial_density(self, x):
         # Return the density p(x_0 = x) of the initial distribution.
@@ -95,17 +98,20 @@ class StateSpaceModel:
         # can be overwritten with closed form expression instead
         return np.log(self.initial_density(x))
 
+    @abstractmethod
     def transition(self, x_prev):
-        raise NotImplementedError
+        ...
 
+    @abstractmethod
     def observation(self, x):
-        raise NotImplementedError
+        ...
 
     def log_transition_density(self, x_next, x_prev):
         raise NotImplementedError
 
+    @abstractmethod
     def log_observation_density(self, y, x):
-        raise NotImplementedError
+        ...
 
     def generate_data(self, num_time_steps):
         states = np.zeros((num_time_steps, self.state_dim))
