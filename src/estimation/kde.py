@@ -18,6 +18,8 @@ Convenience helpers
   chain_marginal_kdes(chain, names)   # list of KDEs, one per parameter column
 """
 
+# Note: do not use KDE within PMMH unless you can verify that the resulting density is unbiased
+
 from __future__ import annotations
 
 import numpy as np

@@ -65,3 +65,34 @@ def _logsumexp2d(a: np.ndarray) -> float:
     """Numerically stable logsumexp over all elements of a 2-D array."""
     a_max = a.max()
     return float(a_max + np.log(np.exp(a - a_max).sum()))
+
+
+# ── timer decorator ───────────────────────────────────────────────────────────
+
+import functools
+import time
+
+
+def timer(func):
+    """
+    Decorator that prints the wall-clock time taken by the wrapped function.
+
+    Works on plain functions, class methods, and static methods.
+
+    Usage
+    -----
+    @timer
+    def my_function(...): ...
+
+    class Foo:
+        @timer
+        def run(self): ...
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        t0 = time.perf_counter()
+        result = func(*args, **kwargs)
+        elapsed = time.perf_counter() - t0
+        print(f"{func.__qualname__}  {elapsed:.3f}s")
+        return result
+    return wrapper

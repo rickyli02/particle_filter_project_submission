@@ -35,7 +35,7 @@ import numpy as np
 from scipy.linalg import cho_factor, cho_solve, solve_discrete_lyapunov
 
 from models.base import StateSpaceModel
-from utils import symmetrize, _logsumexp2d
+from utils import symmetrize, _logsumexp2d, timer
 
 
 # ── Kim filter ────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ class KimFilter:
         )
 
     # ── filter ────────────────────────────────────────────────────────────────
-
+    @timer
     def run_filter(self):
         """
         Run the Kim approximate forward filter.

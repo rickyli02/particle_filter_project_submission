@@ -133,6 +133,12 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
 
         return loglik
 
+    # closed form Hessian of log p(y_{0:T-1} | theta)
+    def hessian_log_likelihood(self, y):
+        '''
+        Hessian of log p(y_{0:T-1} | theta)
+        '''
+        raise NotImplementedError
 
 
 

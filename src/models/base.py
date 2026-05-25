@@ -37,6 +37,12 @@ class StateSpaceModel:
     def unconstrain_params(self, constrained_params):
         raise NotImplementedError
 
+    def constrain_chain(self, ch):
+        """Map every row of an unconstrained chain of parameter values to constrained space."""
+        # Check dimensions
+        assert ch.shape[1] == len(self.params_dict)
+        return np.array([self.constrain_params(row) for row in ch])
+
     def update_params(self, constrained_params):
         # Update all model attributes and params_dict in-place from constrained params.
         # should call check_params_validity() before updating

@@ -17,6 +17,8 @@ from scipy.linalg import LinAlgError
 
 from models.base import StateSpaceModel
 
+from utils import timer
+
 
 # ── result container ──────────────────────────────────────────────────────────
 
@@ -64,7 +66,7 @@ class MLEResult:
         for i, (name, val) in enumerate(zip(self.param_names, params)):
             se = (
                 f"{self.std_errors[i]:>12.6f}"
-                if self.std_errors is not None
+                if self.std_errors is not None and not np.isnan(self.std_errors[i])
                 else f"{'—':>12}"
             )
             lines.append(f"  {name:<16}  {val:>12.6f}  {se}")
@@ -159,7 +161,7 @@ class MLEEstimator:
         )
 
     # ── public API ────────────────────────────────────────────────────────────
-
+    @timer
     def fit(self, theta0=None) -> MLEResult:
         """
         Fit the model by maximizing log_likelihood.
@@ -264,8 +266,11 @@ class MLEEstimator:
             jac[:, i] = (ci - c0) / eps
 
         # SE_constrained[k] ≈ sqrt( Jac[k,:] @ cov_unc @ Jac[k,:].T )
+        # Non-positive variance means the Hessian is (near-)singular in that direction
+        # (e.g. identification ridge) — return nan rather than 0 to make it visible.
         se_con = np.array([
-            np.sqrt(max(jac[k] @ cov_unc @ jac[k], 0.0)) for k in range(d)
+            np.sqrt(v) if (v := jac[k] @ cov_unc @ jac[k]) > 0 else np.nan
+            for k in range(d)
         ])
 
         self.result.std_errors = se_con

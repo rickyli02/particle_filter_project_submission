@@ -6,6 +6,7 @@
 # 2. if PMMH using RBPF is "better" than PMMH using naive PF
 
 from .particle_filter import ParticleFilter
+from utils import timer
 
 
 class RaoBlackwellizedParticleFilter(ParticleFilter):
@@ -18,6 +19,7 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
         # check that model is suitable for RBPF
         raise NotImplementedError
 
+    @timer
     def run_filter(self):
         raise NotImplementedError
 

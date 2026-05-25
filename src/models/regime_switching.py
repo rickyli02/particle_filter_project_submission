@@ -16,7 +16,7 @@ class RegimeSwitchingSSM(StateSpaceModel):
         self.regime_transition_matrix = regime_transition_matrix
 
         pi = self.solve_stationary_distribution()
-        self.regime_probabilities_stationary = pi[:-1]
+        self.regime_probabilities_stationary = pi
 
         self.rng = np.random.default_rng(seed)
         self.check_params_validity()
@@ -66,20 +66,14 @@ class RegimeSwitchingSSM(StateSpaceModel):
         self.check_params_validity()
 
     def solve_stationary_distribution(self):
-        # Solve for the stationary distribution of the regime Markov chain
-
-        # Initial regime probabilities should be calculated from the stationary distribution of the regime Markov chain
-        # Note: this assumes the regime transition matrix is ergodic and has a unique stationary distribution
-        # Solve (I - P)^T * pi^T = 0 with the constraint sum(pi) = 1
-
-        I = np.eye(self.n_regimes)
-        A = I - self.regime_transition_matrix.T
-        # Add a last row of ones for the sum constraint
-        A = np.vstack([A, np.ones(self.n_regimes)])
-        b = np.zeros(self.n_regimes + 1)
-        b[-1] = 1
-        pi = np.linalg.solve(A, b)
-        return pi[:-1]
+        n = self.n_regimes
+        # Solve (P^T - I) pi = 0, sum(pi) = 1  as a square n×n system:
+        # replace the last row of (P^T - I) with the normalisation constraint.
+        A = self.regime_transition_matrix.T - np.eye(n)
+        A[-1, :] = 1.0
+        b = np.zeros(n)
+        b[-1] = 1.0
+        return np.linalg.solve(A, b)
     
     def sample_initial_distribution(self):
         # Sample x_0 from the initial distribution.

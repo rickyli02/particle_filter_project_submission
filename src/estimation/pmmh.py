@@ -2,6 +2,7 @@ import numpy as np
 
 from models.base import StateSpaceModel
 from estimation.particle_filter import ParticleFilter
+from utils import timer
 
 
 class PMMH:
@@ -100,8 +101,8 @@ class PMMH:
         return loglik if np.isfinite(loglik) else -np.inf
 
     # ── main sampler ──────────────────────────────────────────────────────────
-
-    def run(self):
+    @timer
+    def run(self, log_interval=500):
         """
         Run PMMH for n_iter iterations.
 
@@ -147,6 +148,9 @@ class PMMH:
 
             chain[i + 1] = theta_curr
             loglik_chain[i + 1] = loglik_curr
+
+            if i > 0 and i % log_interval == 0:
+                print(f"[{i+1}/{self.n_iter}] theta estimate = {chain.mean(axis=0)}, loglik = {loglik_curr}, accept rate = {accepted[:i].mean()}")
 
         self.chain = chain
         self.loglik_chain = loglik_chain
