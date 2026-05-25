@@ -1,11 +1,12 @@
 import numpy as np
 
-from models.base import StateSpaceModel
+from estimation.mcmc import MCMCBase
 from estimation.particle_filter import ParticleFilter
+from models.base import StateSpaceModel
 from utils import timer
 
 
-class PMMH:
+class PMMH(MCMCBase):
     """
     Particle Marginal Metropolis-Hastings (PMMH).
 
@@ -25,7 +26,7 @@ class PMMH:
     step_sizes      : array-like of length d, or None  (defaults to 0.1 per dim)
     theta0          : array-like of length d — initial *unconstrained* params;
                       use model.unconstrain_params(...) to obtain this
-    log_prior       : callable(theta_unc) -> float, or None  (flat prior)
+    log_prior       : callable(theta_con) -> float, or None  (flat prior in constrained space)
     seed            : int
     """
 
@@ -39,40 +40,10 @@ class PMMH:
         log_prior=None,
         seed=0,
     ):
-        if not isinstance(model, StateSpaceModel):
-            raise ValueError("model must be a StateSpaceModel instance.")
         if not isinstance(particle_filter, ParticleFilter):
             raise ValueError("particle_filter must be a ParticleFilter instance.")
-        if theta0 is None:
-            raise ValueError(
-                "theta0 (initial unconstrained parameter vector) is required. "
-                "Use model.unconstrain_params(...) to obtain it."
-            )
-
-        self.model = model
-        self.pf = particle_filter # we can switch the particle filter, e.g. basic PF, RBPF
-        self.n_iter = n_iter
-        self.log_prior = log_prior if log_prior is not None else lambda _: 0.0
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
-
-        self.theta0 = np.asarray(theta0, dtype=float)
-        d = len(self.theta0)
-        self.step_sizes = (
-            np.ones(d) * 0.1
-            if step_sizes is None
-            else np.asarray(step_sizes, dtype=float)
-        )
-
-        if len(self.step_sizes) != d:
-            raise ValueError(
-                f"step_sizes length {len(self.step_sizes)} != theta0 length {d}."
-            )
-
-        self.chain = None
-        self.loglik_chain = None
-        self.accepted = None
-        self.accept_rate = None
+        super().__init__(model, n_iter, step_sizes, theta0, log_prior, seed)
+        self.pf = particle_filter
 
     def __repr__(self):
         return (
@@ -101,6 +72,7 @@ class PMMH:
         return loglik if np.isfinite(loglik) else -np.inf
 
     # ── main sampler ──────────────────────────────────────────────────────────
+
     @timer
     def run(self, log_interval=500):
         """
@@ -113,17 +85,17 @@ class PMMH:
         accepted     : (n_iter,) bool   True where the proposal was accepted
         """
         rng = self.rng
-        d = len(self.theta0)
+        d   = len(self.theta0)
 
-        chain = np.zeros((self.n_iter + 1, d))
+        chain        = np.zeros((self.n_iter + 1, d))
         loglik_chain = np.zeros(self.n_iter + 1)
-        accepted = np.zeros(self.n_iter, dtype=bool)
+        accepted     = np.zeros(self.n_iter, dtype=bool)
 
-        theta_curr = self.theta0.copy()
+        theta_curr  = self.theta0.copy()
         loglik_curr = self._evaluate_loglik(theta_curr)
-        log_prior_curr = self.log_prior(theta_curr)
+        lp_curr     = self._log_prior_and_jac(theta_curr)
 
-        chain[0] = theta_curr
+        chain[0]        = theta_curr
         loglik_chain[0] = loglik_curr
 
         for i in range(self.n_iter):
@@ -133,33 +105,34 @@ class PMMH:
                 loglik_prop = self._evaluate_loglik(theta_prop)
             except Exception:
                 # Invalid proposal (e.g. non-PSD covariance, unstable dynamics)
-                chain[i + 1] = theta_curr
+                chain[i + 1]        = theta_curr
                 loglik_chain[i + 1] = loglik_curr
                 continue
 
-            log_prior_prop = self.log_prior(theta_prop)
-            log_alpha = (log_prior_prop + loglik_prop) - (log_prior_curr + loglik_curr)
+            lp_prop   = self._log_prior_and_jac(theta_prop)
+            log_alpha = (lp_prop + loglik_prop) - (lp_curr + loglik_curr)
 
             if np.log(rng.uniform()) < log_alpha:
-                theta_curr = theta_prop
+                theta_curr  = theta_prop
                 loglik_curr = loglik_prop
-                log_prior_curr = log_prior_prop
+                lp_curr     = lp_prop
                 accepted[i] = True
 
-            chain[i + 1] = theta_curr
+            chain[i + 1]        = theta_curr
             loglik_chain[i + 1] = loglik_curr
 
             if i > 0 and i % log_interval == 0:
-                print(f"[{i+1}/{self.n_iter}] theta estimate = {chain.mean(axis=0)}, loglik = {loglik_curr}, accept rate = {accepted[:i].mean()}")
+                print(
+                    f"[{i+1}/{self.n_iter}]  theta = {chain.mean(axis=0)},  "
+                    f"loglik = {loglik_curr:.2f},  accept rate = {accepted[:i].mean():.3f}"
+                )
 
-        self.chain = chain
+        self.chain        = chain
         self.loglik_chain = loglik_chain
-        self.accepted = accepted
-        self.accept_rate = float(accepted.mean())
+        self.accepted     = accepted
+        self.accept_rate  = float(accepted.mean())
 
-        # Restore model to the last accepted state
         self.model.update_params(self.model.constrain_params(theta_curr))
-
         return chain, loglik_chain, accepted
 
 
@@ -200,6 +173,7 @@ class BlockPMMH(PMMH):
             f"N_particles={self.pf.N_particles}, n_blocks={len(self.blocks)})"
         )
 
+    @timer
     def run(self):
         """
         Run block-update PMMH.
@@ -208,22 +182,22 @@ class BlockPMMH(PMMH):
         one block proposal was accepted during iteration i.
         """
         rng = self.rng
-        d = len(self.theta0)
+        d   = len(self.theta0)
 
-        chain = np.zeros((self.n_iter + 1, d))
+        chain        = np.zeros((self.n_iter + 1, d))
         loglik_chain = np.zeros(self.n_iter + 1)
-        accepted = np.zeros(self.n_iter, dtype=bool)
+        accepted     = np.zeros(self.n_iter, dtype=bool)
 
-        theta_curr = self.theta0.copy()
+        theta_curr  = self.theta0.copy()
         loglik_curr = self._evaluate_loglik(theta_curr)
-        log_prior_curr = self.log_prior(theta_curr)
+        lp_curr     = self._log_prior_and_jac(theta_curr)
 
-        chain[0] = theta_curr
+        chain[0]        = theta_curr
         loglik_chain[0] = loglik_curr
 
         for i in range(self.n_iter):
             for block in self.blocks:
-                idx = np.array(block)
+                idx        = np.array(block)
                 theta_prop = theta_curr.copy()
                 theta_prop[idx] += rng.normal(0.0, self.step_sizes[idx])
 
@@ -232,25 +206,22 @@ class BlockPMMH(PMMH):
                 except Exception:
                     continue
 
-                log_prior_prop = self.log_prior(theta_prop)
-                log_alpha = (
-                    (log_prior_prop + loglik_prop) - (log_prior_curr + loglik_curr)
-                )
+                lp_prop   = self._log_prior_and_jac(theta_prop)
+                log_alpha = (lp_prop + loglik_prop) - (lp_curr + loglik_curr)
 
                 if np.log(rng.uniform()) < log_alpha:
-                    theta_curr = theta_prop
+                    theta_curr  = theta_prop
                     loglik_curr = loglik_prop
-                    log_prior_curr = log_prior_prop
+                    lp_curr     = lp_prop
                     accepted[i] = True
 
-            chain[i + 1] = theta_curr
+            chain[i + 1]        = theta_curr
             loglik_chain[i + 1] = loglik_curr
 
-        self.chain = chain
+        self.chain        = chain
         self.loglik_chain = loglik_chain
-        self.accepted = accepted
-        self.accept_rate = float(accepted.mean())
+        self.accepted     = accepted
+        self.accept_rate  = float(accepted.mean())
 
         self.model.update_params(self.model.constrain_params(theta_curr))
-
         return chain, loglik_chain, accepted

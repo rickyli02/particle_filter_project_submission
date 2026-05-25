@@ -37,11 +37,40 @@ class StateSpaceModel:
     def unconstrain_params(self, constrained_params):
         raise NotImplementedError
 
+    def jacobian_constrain_params(self, unconstrained_params):
+        raise NotImplementedError # Needed for MCMC, ideally in closed form
+
     def constrain_chain(self, ch):
-        """Map every row of an unconstrained chain of parameter values to constrained space."""
-        # Check dimensions
-        assert ch.shape[1] == len(self.params_dict)
-        return np.array([self.constrain_params(row) for row in ch])
+        """Map every row of an unconstrained chain to constrained space.
+
+        Parameters
+        ----------
+        ch : (n, d) array-like — rows are unconstrained parameter vectors
+
+        Returns
+        -------
+        (n, d) float array of constrained parameters
+        """
+        ch = np.asarray(ch, dtype=float)
+        d  = len(self.params_dict)
+
+        if ch.ndim == 1:
+            raise ValueError(
+                f"constrain_chain expects a 2-D array of shape (n, {d}); "
+                f"got a 1-D array of length {len(ch)}. "
+                "For a single sample use constrain_params."
+            )
+        if ch.ndim != 2:
+            raise ValueError(
+                f"constrain_chain expects a 2-D array; got ndim={ch.ndim}."
+            )
+        if ch.shape[1] != d:
+            raise ValueError(
+                f"constrain_chain: chain has {ch.shape[1]} columns "
+                f"but model has {d} parameters."
+            )
+
+        return np.array([self.constrain_params(row) for row in ch], dtype=float)
 
     def update_params(self, constrained_params):
         # Update all model attributes and params_dict in-place from constrained params.

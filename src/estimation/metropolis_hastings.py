@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from estimation.mcmc import MCMCBase
 from models.base import StateSpaceModel
+from utils import timer
 
 
-class MetropolisHastings:
+class MetropolisHastings(MCMCBase):
     """
     Random-walk Metropolis-Hastings for state-space models with a
     closed-form log-likelihood.
@@ -39,7 +41,7 @@ class MetropolisHastings:
     step_sizes : array-like of length d, or None (defaults to 0.1 per dim)
     theta0     : array-like of length d — initial *unconstrained* params;
                  use model.unconstrain_params(...) to obtain this
-    log_prior  : callable(theta_unc) -> float, or None (flat prior)
+    log_prior  : callable(theta_con) -> float, or None (flat prior in constrained space)
     seed       : int | None
     """
 
@@ -53,46 +55,16 @@ class MetropolisHastings:
         log_prior=None,
         seed=None,
     ):
-        if not isinstance(model, StateSpaceModel):
-            raise ValueError("model must be a StateSpaceModel instance.")
         if not hasattr(model, "log_likelihood"):
             raise ValueError(
                 f"{type(model).__name__} does not implement log_likelihood(data). "
                 "MetropolisHastings requires a closed-form log-likelihood."
             )
-        if theta0 is None:
-            raise ValueError(
-                "theta0 (initial unconstrained parameter vector) is required. "
-                "Use model.unconstrain_params(...) to obtain it."
-            )
-
-        self.model     = model
-        self.data      = data
-        self.n_iter    = n_iter
-        self.log_prior = log_prior if log_prior is not None else lambda _: 0.0
-        self.rng       = np.random.default_rng(seed)
-
-        self.theta0 = np.asarray(theta0, dtype=float)
-        d = len(self.theta0)
-        self.step_sizes = (
-            np.ones(d) * 0.1
-            if step_sizes is None
-            else np.asarray(step_sizes, dtype=float)
-        )
-        if len(self.step_sizes) != d:
-            raise ValueError(
-                f"step_sizes length {len(self.step_sizes)} != theta0 length {d}."
-            )
-
-        self.chain        = None
-        self.loglik_chain = None
-        self.accepted     = None
-        self.accept_rate  = None
+        super().__init__(model, n_iter, step_sizes, theta0, log_prior, seed)
+        self.data = data
 
     def __repr__(self) -> str:
-        return (
-            f"MetropolisHastings(model={self.model!r}, n_iter={self.n_iter})"
-        )
+        return f"MetropolisHastings(model={self.model!r}, n_iter={self.n_iter})"
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -106,6 +78,7 @@ class MetropolisHastings:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    @timer
     def run(self):
         """
         Run Metropolis-Hastings for n_iter iterations.
@@ -123,9 +96,9 @@ class MetropolisHastings:
         loglik_chain = np.zeros(self.n_iter + 1)
         accepted     = np.zeros(self.n_iter, dtype=bool)
 
-        theta_curr     = self.theta0.copy()
-        loglik_curr    = self._evaluate_loglik(theta_curr)
-        log_prior_curr = self.log_prior(theta_curr)
+        theta_curr  = self.theta0.copy()
+        loglik_curr = self._evaluate_loglik(theta_curr)
+        lp_curr     = self._log_prior_and_jac(theta_curr)
 
         chain[0]        = theta_curr
         loglik_chain[0] = loglik_curr
@@ -140,14 +113,14 @@ class MetropolisHastings:
                 loglik_chain[i + 1] = loglik_curr
                 continue
 
-            log_prior_prop = self.log_prior(theta_prop)
-            log_alpha = (log_prior_prop + loglik_prop) - (log_prior_curr + loglik_curr)
+            lp_prop   = self._log_prior_and_jac(theta_prop)
+            log_alpha = (lp_prop + loglik_prop) - (lp_curr + loglik_curr)
 
             if np.log(rng.uniform()) < log_alpha:
-                theta_curr     = theta_prop
-                loglik_curr    = loglik_prop
-                log_prior_curr = log_prior_prop
-                accepted[i]    = True
+                theta_curr  = theta_prop
+                loglik_curr = loglik_prop
+                lp_curr     = lp_prop
+                accepted[i] = True
 
             chain[i + 1]        = theta_curr
             loglik_chain[i + 1] = loglik_curr
@@ -212,9 +185,9 @@ class BlockMetropolisHastings(MetropolisHastings):
         loglik_chain = np.zeros(self.n_iter + 1)
         accepted     = np.zeros(self.n_iter, dtype=bool)
 
-        theta_curr     = self.theta0.copy()
-        loglik_curr    = self._evaluate_loglik(theta_curr)
-        log_prior_curr = self.log_prior(theta_curr)
+        theta_curr  = self.theta0.copy()
+        loglik_curr = self._evaluate_loglik(theta_curr)
+        lp_curr     = self._log_prior_and_jac(theta_curr)
 
         chain[0]        = theta_curr
         loglik_chain[0] = loglik_curr
@@ -230,16 +203,14 @@ class BlockMetropolisHastings(MetropolisHastings):
                 except Exception:
                     continue
 
-                log_prior_prop = self.log_prior(theta_prop)
-                log_alpha = (
-                    (log_prior_prop + loglik_prop) - (log_prior_curr + loglik_curr)
-                )
+                lp_prop   = self._log_prior_and_jac(theta_prop)
+                log_alpha = (lp_prop + loglik_prop) - (lp_curr + loglik_curr)
 
                 if np.log(rng.uniform()) < log_alpha:
-                    theta_curr     = theta_prop
-                    loglik_curr    = loglik_prop
-                    log_prior_curr = log_prior_prop
-                    accepted[i]    = True
+                    theta_curr  = theta_prop
+                    loglik_curr = loglik_prop
+                    lp_curr     = lp_prop
+                    accepted[i] = True
 
             chain[i + 1]        = theta_curr
             loglik_chain[i + 1] = loglik_curr

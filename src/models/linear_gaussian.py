@@ -90,6 +90,24 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
         return [float(np.tanh(u_phi)), float(u_alpha),
                 float(np.exp(u_sigma)), float(np.exp(u_tau))]
 
+    def jacobian_constrain_params(self, unconstrained_params):
+        """
+        Diagonal Jacobian of constrain_params at unconstrained_params.
+
+        Returns a (4, 4) diagonal matrix J where J[k, k] = d(θ_con[k]) / d(θ_unc[k]):
+          phi   : d(tanh(u)) / du = 1 - tanh²(u)
+          alpha : d(u) / du       = 1
+          sigma : d(exp(u)) / du  = exp(u)
+          tau   : d(exp(u)) / du  = exp(u)
+        """
+        u_phi, _, u_sigma, u_tau = unconstrained_params
+        return np.diag([
+            1.0 - np.tanh(u_phi) ** 2,
+            1.0,
+            np.exp(u_sigma),
+            np.exp(u_tau),
+        ])
+
     def log_transition_density(self, x_next, x_prev):
         return log_normal_pdf_scalar(x_next, self.phi * x_prev, self.sigma ** 2)
 

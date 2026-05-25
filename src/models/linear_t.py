@@ -58,6 +58,26 @@ class LinearTSSM(StateSpaceModel):
         return [float(u_alpha), float(np.exp(u_tau)), float(np.tanh(u_phi)),
                 float(np.exp(u_sigma)), float(np.exp(u_df))]
 
+    def jacobian_constrain_params(self, unconstrained_params):
+        """
+        Diagonal Jacobian of constrain_params at unconstrained_params.
+
+        Returns a (5, 5) diagonal matrix J where J[k, k] = d(θ_con[k]) / d(θ_unc[k]):
+          alpha : d(u) / du       = 1
+          tau   : d(exp(u)) / du  = exp(u)
+          phi   : d(tanh(u)) / du = 1 - tanh²(u)
+          sigma : d(exp(u)) / du  = exp(u)
+          df    : d(exp(u)) / du  = exp(u)
+        """
+        u_alpha, u_tau, u_phi, u_sigma, u_df = unconstrained_params
+        return np.diag([
+            1.0,
+            np.exp(u_tau),
+            1.0 - np.tanh(u_phi) ** 2,
+            np.exp(u_sigma),
+            np.exp(u_df),
+        ])
+
     def update_params(self, constrained_params):
         alpha, tau, phi, sigma, df = constrained_params
         self.alpha = alpha
