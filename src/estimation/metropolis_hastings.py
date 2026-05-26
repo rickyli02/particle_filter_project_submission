@@ -41,7 +41,13 @@ class MetropolisHastings(MCMCBase):
     step_sizes : array-like of length d, or None (defaults to 0.1 per dim)
     theta0     : array-like of length d — initial *unconstrained* params;
                  use model.unconstrain_params(...) to obtain this
-    log_prior  : callable(theta_con) -> float, or None (flat prior in constrained space)
+    log_prior  : callable, or None
+                 Log prior on constrained θ or unconstrained z; see prior_space.
+    prior_space: {"constrained", "unconstrained"}
+                 Whether log_prior is defined on θ or z.
+    include_jacobian : bool | None
+                 Whether to include log|det dθ/dz| in the target density.
+                 Default: True for constrained priors, False for unconstrained priors.
     seed       : int | None
     """
 
@@ -53,6 +59,8 @@ class MetropolisHastings(MCMCBase):
         step_sizes=None,
         theta0=None,
         log_prior=None,
+        prior_space="constrained",
+        include_jacobian=None,
         seed=None,
     ):
         if not hasattr(model, "log_likelihood"):
@@ -60,7 +68,16 @@ class MetropolisHastings(MCMCBase):
                 f"{type(model).__name__} does not implement log_likelihood(data). "
                 "MetropolisHastings requires a closed-form log-likelihood."
             )
-        super().__init__(model, n_iter, step_sizes, theta0, log_prior, seed)
+        super().__init__(
+            model,
+            n_iter,
+            step_sizes,
+            theta0,
+            log_prior,
+            prior_space,
+            include_jacobian,
+            seed,
+        )
         self.data = data
 
     def __repr__(self) -> str:
@@ -157,10 +174,22 @@ class BlockMetropolisHastings(MetropolisHastings):
         step_sizes=None,
         theta0=None,
         log_prior=None,
+        prior_space="constrained",
+        include_jacobian=None,
         seed=None,
         blocks=None,
     ):
-        super().__init__(model, data, n_iter, step_sizes, theta0, log_prior, seed)
+        super().__init__(
+            model,
+            data,
+            n_iter,
+            step_sizes,
+            theta0,
+            log_prior,
+            prior_space,
+            include_jacobian,
+            seed,
+        )
         d = len(self.theta0)
         self.blocks = blocks if blocks is not None else [[i] for i in range(d)]
 

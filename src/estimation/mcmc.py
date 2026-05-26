@@ -1,13 +1,18 @@
 """
 Abstract base class for MCMC samplers over state-space model parameters.
 
-All concrete samplers target the change-of-variables posterior in unconstrained
-space:
+All concrete samplers target a posterior in unconstrained space z. When the
+user supplies a prior on constrained parameters θ = θ(z), the samplers include
+the usual change-of-variables correction:
 
     π(z) ∝ p(y | θ(z)) · p_prior(θ(z)) · |det J(z)|
 
 where z is the unconstrained parameter vector, θ(z) = constrain_params(z), and
 J(z) = dθ/dz is the Jacobian of the constrain_params transform.
+
+If instead the user supplies a prior directly on z, the target becomes
+
+    π(z) ∝ p(y | θ(z)) · p_prior(z)
 
 Subclasses must implement:
     _evaluate_loglik(theta_unc) → float   log p(y|θ) or an unbiased estimate
@@ -34,8 +39,13 @@ class MCMCBase(ABC):
     step_sizes : array-like of length d, or None (defaults to 0.1 per dim)
     theta0     : array-like of length d — initial *unconstrained* parameter vector;
                  obtain via model.unconstrain_params(constrained_params)
-    log_prior  : callable(theta_con) -> float, or None
-                 Log prior evaluated at *constrained* θ.  None → flat prior.
+    log_prior  : callable, or None
+                 Log prior. Interpreted according to prior_space.
+    prior_space: {"constrained", "unconstrained"}
+                 Whether log_prior is defined on constrained θ or unconstrained z.
+    include_jacobian : bool | None
+                 Whether to add log|det dθ/dz| to the target.
+                 Default: True for constrained priors, False for unconstrained priors.
     seed       : int | None
     """
 
@@ -46,6 +56,8 @@ class MCMCBase(ABC):
         step_sizes,
         theta0,
         log_prior,
+        prior_space,
+        include_jacobian,
         seed,
     ):
         if not isinstance(model, StateSpaceModel):
@@ -55,16 +67,26 @@ class MCMCBase(ABC):
                 "theta0 (initial unconstrained parameter vector) is required. "
                 "Use model.unconstrain_params(...) to obtain it."
             )
+        if prior_space not in {"constrained", "unconstrained"}:
+            raise ValueError(
+                "prior_space must be either 'constrained' or 'unconstrained'."
+            )
 
-        self.model      = model
-        self.n_iter     = n_iter
-        self.log_prior  = log_prior if log_prior is not None else lambda _: 0.0
-        self.seed       = seed
-        self.rng        = np.random.default_rng(seed)
+        self.model         = model
+        self.n_iter        = n_iter
+        self.log_prior     = log_prior if log_prior is not None else lambda _: 0.0
+        self.prior_space   = prior_space
+        self.include_jacobian = (
+            prior_space == "constrained"
+            if include_jacobian is None
+            else bool(include_jacobian)
+        )
+        self.seed          = seed
+        self.rng           = np.random.default_rng(seed)
 
-        self.theta0     = np.asarray(theta0, dtype=float)
-        d               = len(self.theta0)
-        self.step_sizes = (
+        self.theta0        = np.asarray(theta0, dtype=float)
+        d                  = len(self.theta0)
+        self.step_sizes    = (
             np.ones(d) * 0.1
             if step_sizes is None
             else np.asarray(step_sizes, dtype=float)
@@ -107,25 +129,45 @@ class MCMCBase(ABC):
 
     # ── shared internals ──────────────────────────────────────────────────────
 
+    def _log_abs_det_jacobian(self, theta_unc: np.ndarray) -> float:
+        """
+        log|det dθ/dz| for the model's constrain_params transform.
+
+        Supports both diagonal Jacobians and general square Jacobians. Raises
+        NotImplementedError if the model does not provide jacobian_constrain_params.
+        """
+        J = np.asarray(self.model.jacobian_constrain_params(theta_unc), dtype=float)
+        if J.ndim != 2 or J.shape[0] != J.shape[1]:
+            raise ValueError(
+                "jacobian_constrain_params must return a square 2-D array."
+            )
+        sign, logabsdet = np.linalg.slogdet(J)
+        if sign == 0:
+            return -np.inf
+        return float(logabsdet)
+
+    def _log_prior_term(self, theta_unc: np.ndarray) -> float:
+        """
+        Prior contribution to the target density in unconstrained space z.
+
+        - For constrained priors: log p(θ(z)) [+ log|det dθ/dz| if requested]
+        - For unconstrained priors: log p(z)
+        """
+        if self.prior_space == "constrained":
+            lp = self.log_prior(self.model.constrain_params(theta_unc))
+        else:
+            lp = self.log_prior(theta_unc)
+
+        if self.include_jacobian:
+            lp += self._log_abs_det_jacobian(theta_unc)
+
+        return float(lp)
+
     def _log_prior_and_jac(self, theta_unc: np.ndarray) -> float:
         """
-        log p_prior(θ(z)) + log|det J(z)|
-
-        Change-of-variables correction for sampling in unconstrained space.
-        log_prior is evaluated at constrained θ(z), not at z.
-        The Jacobian term accounts for the volume distortion introduced by the
-        reparameterisation; it does not cancel in the acceptance ratio because
-        J(z_prop) ≠ J(z_curr) in general.
-        If jacobian_constrain_params is not implemented, the Jacobian is omitted.
+        Backward-compatible alias for the target prior contribution.
         """
-        constrained = self.model.constrain_params(theta_unc)
-        lp = self.log_prior(constrained)
-        try:
-            J   = self.model.jacobian_constrain_params(theta_unc)
-            lp += np.sum(np.log(np.diag(J)))
-        except NotImplementedError:
-            pass
-        return float(lp)
+        return self._log_prior_term(theta_unc)
 
     # ── shared post-run API ───────────────────────────────────────────────────
 

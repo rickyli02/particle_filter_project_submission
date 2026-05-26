@@ -26,7 +26,13 @@ class PMMH(MCMCBase):
     step_sizes      : array-like of length d, or None  (defaults to 0.1 per dim)
     theta0          : array-like of length d — initial *unconstrained* params;
                       use model.unconstrain_params(...) to obtain this
-    log_prior       : callable(theta_con) -> float, or None  (flat prior in constrained space)
+    log_prior       : callable, or None
+                      Log prior on constrained θ or unconstrained z; see prior_space.
+    prior_space     : {"constrained", "unconstrained"}
+                      Whether log_prior is defined on θ or z.
+    include_jacobian : bool | None
+                      Whether to include log|det dθ/dz| in the target density.
+                      Default: True for constrained priors, False for unconstrained priors.
     seed            : int
     """
 
@@ -38,11 +44,22 @@ class PMMH(MCMCBase):
         step_sizes=None,
         theta0=None,
         log_prior=None,
+        prior_space="constrained",
+        include_jacobian=None,
         seed=0,
     ):
         if not isinstance(particle_filter, ParticleFilter):
             raise ValueError("particle_filter must be a ParticleFilter instance.")
-        super().__init__(model, n_iter, step_sizes, theta0, log_prior, seed)
+        super().__init__(
+            model,
+            n_iter,
+            step_sizes,
+            theta0,
+            log_prior,
+            prior_space,
+            include_jacobian,
+            seed,
+        )
         self.pf = particle_filter
 
     def __repr__(self):
@@ -123,7 +140,7 @@ class PMMH(MCMCBase):
 
             if i > 0 and i % log_interval == 0:
                 print(
-                    f"[{i+1}/{self.n_iter}]  theta = {chain.mean(axis=0)},  "
+                    f"[{i}/{self.n_iter}]  theta = {chain.mean(axis=0)},  "
                     f"loglik = {loglik_curr:.2f},  accept rate = {accepted[:i].mean():.3f}"
                 )
 
@@ -160,10 +177,22 @@ class BlockPMMH(PMMH):
         step_sizes=None,
         theta0=None,
         log_prior=None,
+        prior_space="constrained",
+        include_jacobian=None,
         seed=0,
         blocks=None,
     ):
-        super().__init__(model, particle_filter, n_iter, step_sizes, theta0, log_prior, seed)
+        super().__init__(
+            model,
+            particle_filter,
+            n_iter,
+            step_sizes,
+            theta0,
+            log_prior,
+            prior_space,
+            include_jacobian,
+            seed,
+        )
         d = len(self.theta0)
         self.blocks = blocks if blocks is not None else [[i] for i in range(d)]
 

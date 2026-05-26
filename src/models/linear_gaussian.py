@@ -82,6 +82,8 @@ class SimpleLinearGaussianSSM(StateSpaceModel):
         return self.alpha * x + self.rng.normal(0, self.tau, size=x.shape)
 
     def unconstrain_params(self, constrained_params):
+        # Note that unconstraining parameters can lead to "boundary compression" problems
+        # MCMC samplers will have a hard time estimating near boundaries, as they go to infinity
         phi, alpha, sigma, tau = constrained_params
         return np.array([np.arctanh(phi), alpha, np.log(sigma), np.log(tau)])
 

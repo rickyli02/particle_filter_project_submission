@@ -56,6 +56,18 @@ def ess_trajectory(pf):
     """Effective sample size 1/Σw² at each time step."""
     return np.array([1.0 / np.sum(w.flatten() ** 2) for w in pf.weight_history])
 
+def chain_ess(x, max_lag=300):
+    """ESS via initial positive-sequence truncation of the normalised ACF."""
+    n = len(x)
+    xc = x - x.mean()
+    var = xc.var()
+    if var < 1e-15:
+        return float(n)
+    acf = np.correlate(xc, xc, 'full')[n-1:] / (n * var)
+    cut = next((k for k in range(1, min(max_lag + 1, n)) if acf[k] <= 0),
+               min(max_lag, n - 1))
+    iat = max(1.0 + 2.0 * acf[1:cut].sum(), 1.0)
+    return float(n / iat)
 
 def rmse(true, est):
     """Root mean squared error between two array-like sequences."""

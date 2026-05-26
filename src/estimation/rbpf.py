@@ -1,7 +1,7 @@
 # Rao-Blackwellized Particle Filter
 # used for models where conditional distribution is partially closed form, such as regime switching models
 
-# later, we will write block in testing_estimation.ipynb notebook that test 
+# later, we will write block in an .ipynb notebook that test 
 # 1. if RMSE, log likelihood variance, etc. are better with Rao-Blackwellized PF than naive PF for such models
 # 2. if PMMH using RBPF is "better" than PMMH using naive PF
 
