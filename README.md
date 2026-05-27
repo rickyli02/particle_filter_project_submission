@@ -23,21 +23,27 @@ particle_filter_project/
 │   ├── models/
 │   │   ├── base.py                   # Abstract StateSpaceModel base class
 │   │   ├── linear_gaussian.py        # SimpleLinearGaussianSSM, LinearGaussianSSM
+│   │   ├── linear_model_notes.md     # Kalman filter derivations, score, HMC parameterization
 │   │   ├── linear_t.py               # LinearTSSM (t-distributed process noise)
 │   │   ├── linear_ARMA.py            # LinearARMASSM (ARMA(1,3) latent state)
 │   │   ├── regime_switching.py       # RegimeSwitchingSSM (general K-regime)
 │   │   └── regime_switching_macro.py # RegimeSwitchingMacro (6-state macro model)
 │   ├── estimation/
+│   │   ├── mcmc.py                   # MCMCBase abstract class (shared MCMC infrastructure)
 │   │   ├── resampling_methods.py     # Resampling schemes for the particle filter
 │   │   ├── particle_filter.py        # Bootstrap particle filter
 │   │   ├── kalman_filter.py          # Kalman filter + RTS smoother
 │   │   ├── pmmh.py                   # PMMH and BlockPMMH
-│   │   ├── kim_filter.py             # Kim filter (in progress)
-│   │   └── mle_estimator.py          # MLE via Kalman likelihood (in progress)
+│   │   ├── metropolis_hastings.py    # MetropolisHastings, BlockMetropolisHastings
+│   │   ├── hamilton_mc.py            # HamiltonianMC (gradient-based MCMC)
+│   │   ├── mle_estimator.py          # MLE via Kalman likelihood
+│   │   └── kim_filter.py             # Kim filter (in progress)
 │   ├── utils.py                      # Shared numerical utilities
 │   └── older_code/                   # Legacy implementations (superseded)
 ├── notebooks/
-│   └── testing_estimation.ipynb      # Filter comparisons, N-particle sweep, resampling comparison
+│   ├── testing_estimation.ipynb      # Filter comparisons, N-particle sweep, resampling comparison
+│   ├── parameter_estimation.ipynb    # MLE, MH, PMMH posterior inference
+│   └── hmc_estimation.ipynb          # HMC vs MH vs MLE comparison
 └── data/
 ```
 
@@ -73,10 +79,17 @@ Abstract base class for all state-space models.
 
 | Class | Model |
 |-------|-------|
-| `SimpleLinearGaussianSSM(phi, alpha, sigma, tau)` | `x_t = φ x_{t-1} + ε_t`, `y_t = α x_t + ν_t`; 1-D latent, 1-D observation, Gaussian noise |
+| `SimpleLinearGaussianSSM(phi, alpha, sigma2, tau2)` | `x_t = φ x_{t-1} + ε_t`, `y_t = α x_t + ν_t`; 1-D latent, 1-D observation, Gaussian noise; parameters are **variances** `σ²`, `τ²` |
 | `LinearGaussianSSM(a, c, q, r, b, d, mu_0, p_0)` | `x_t = A x_{t-1} + b + ε_t`, `y_t = C x_t + d + ν_t`; general multivariate; initial distribution defaults to stationary via `solve_discrete_lyapunov` |
 
-Both implement the full `StateSpaceModel` interface including `update_params`, `constrain_params` / `unconstrain_params` (tanh for `phi`, log for positive scales, identity for `alpha`), and `log_likelihood(data)` (Kalman filter recursion, exact marginal likelihood).
+Both implement the full `StateSpaceModel` interface including `update_params`, `constrain_params` / `unconstrain_params` (tanh for `phi`, log for positive variances, identity for `alpha`), and `log_likelihood(data)` (Kalman filter recursion, exact marginal likelihood).
+
+`SimpleLinearGaussianSSM` additionally implements:
+
+| Method | Description |
+|--------|-------------|
+| `.score(data)` | Analytic gradient `∇_θ log p(y\|θ)` w.r.t. `(φ, α, σ², τ²)`; propagates sensitivities through the Kalman recursion in a single O(T) forward pass |
+| `.jacobian_constrain_params(u)` | Diagonal Jacobian `dθ/du` of the constrain transform; used by HMC for the chain rule `∇_u ℓ = diag(J) ⊙ ∇_θ ℓ` |
 
 ---
 
@@ -170,6 +183,35 @@ Uses Cholesky factorization of the innovation covariance for numerical stability
 
 ---
 
+### `mcmc.py`
+
+Abstract base class for all MCMC samplers. Handles the constrain/unconstrain bookkeeping, prior evaluation, and Jacobian correction in one place so subclasses only implement the proposal mechanism.
+
+| Symbol | Description |
+|--------|-------------|
+| `MCMCBase` | Abstract base; stores `model`, `data`, `theta0`, `step_sizes`, `log_prior`, `prior_space`, `include_jacobian` |
+| `._evaluate_loglik(theta_unc)` | Abstract; subclasses return `log p(y\|θ(u))` or an unbiased estimate |
+| `.run()` | Abstract; subclasses populate `chain`, `loglik_chain`, `accepted`, `accept_rate` |
+| `._log_prior_term(theta_unc)` | Prior contribution including optional `log\|det J\|` correction |
+| `._log_abs_det_jacobian(theta_unc)` | `log\|det dθ/du\|` via `model.jacobian_constrain_params`; supports diagonal and general Jacobians |
+| `.constrained_chain` | Property: maps every row of the post-run chain through `constrain_params` |
+| `.summary(burn)` | Prints posterior mean, std, and acceptance rate for each constrained parameter |
+
+The target density is `π(u) ∝ p(y\|θ(u)) · p_prior(θ(u)) · \|det J(u)\|` for constrained priors, or `π(u) ∝ p(y\|θ(u)) · p_prior(u)` for unconstrained priors.
+
+---
+
+### `metropolis_hastings.py`
+
+Random-walk Metropolis-Hastings with a closed-form log-likelihood (no particle filter).
+
+| Symbol | Description |
+|--------|-------------|
+| `MetropolisHastings(model, data, n_iter, step_sizes, theta0, log_prior, prior_space, seed)` | Gaussian random-walk proposals in unconstrained space; exact posterior for tractable models |
+| `BlockMetropolisHastings(..., blocks)` | Cycles through parameter index groups; each block accepted/rejected independently |
+
+---
+
 ### `pmmh.py`
 
 Particle Marginal Metropolis-Hastings. Requires the model to implement `constrain_params`, `unconstrain_params`, and `update_params`.
@@ -181,6 +223,21 @@ Particle Marginal Metropolis-Hastings. Requires the model to implement `constrai
 | `BlockPMMH(..., blocks)` | Block-update PMMH; cycles through parameter index groups each iteration; each block is accepted/rejected independently |
 
 `theta0` must be in unconstrained space. Use `model.unconstrain_params(...)` to obtain the initial vector. The particle filter's history is cleared automatically before each likelihood evaluation.
+
+---
+
+### `hamilton_mc.py`
+
+Hamiltonian Monte Carlo for models with a closed-form log-likelihood and analytic score. Requires `model.score(data)` and `model.jacobian_constrain_params(u)` in addition to the standard `MCMCBase` interface.
+
+| Symbol | Description |
+|--------|-------------|
+| `HamiltonianMC(model, data, n_iter, step_size, n_leapfrog, mass_diag, theta0, log_prior, prior_space, seed)` | Gradient-guided proposals via leapfrog integration |
+| `._grad_log_target(u)` | Gradient of `log π(u)`: exact for the likelihood term via `model.score` + chain rule `∇_u ℓ = diag(J) ⊙ ∇_θ ℓ`; central finite differences for the cheap prior + Jacobian correction |
+| `._leapfrog(u, p, grad_u)` | `n_leapfrog` leapfrog steps of size `step_size`; half-kick → (drift → full-kick) × (L−1) → drift → half-kick |
+| `.run()` | Returns `(chain, loglik_chain, accepted)`; each iteration costs `L + 2` Kalman passes |
+
+`mass_diag` (default: ones) is the diagonal of the mass matrix M; tuning it to approximate posterior variances improves mixing. Target acceptance rate is typically 60–80%.
 
 ---
 
@@ -196,7 +253,7 @@ Maximum likelihood estimation for state-space models with a tractable log-likeli
 
 | Symbol | Description |
 |--------|-------------|
-| `MLEEstimator(model, data, method, n_restarts, restart_std, seed)` | Optimizes `model.log_likelihood(data)` in the unconstrained parameter space via `scipy.optimize.minimize` (default `L-BFGS-B`); supports random restarts |
+| `MLEEstimator(model, data, method, n_restarts, restart_std, seed)` | Maximizes `model.log_likelihood(data)` in unconstrained parameter space via `scipy.optimize.minimize` (default `L-BFGS-B`); supports random restarts |
 | `.fit(theta0)` | Run optimization; `theta0` defaults to `model.unconstrain_params(model.params)`. Returns `MLEResult` |
 | `.compute_std_errors(eps)` | Numerical Hessian at the MLE → delta method to return standard errors in the *constrained* space |
 | `MLEResult` | Dataclass: `constrained_params`, `unconstrained_params`, `loglik`, `success`, `n_evals`, `message`, `std_errors`; `.summary()` prints a formatted parameter table |
@@ -223,7 +280,8 @@ Requires the model to implement `log_likelihood(data)`, `constrain_params`, `unc
 | Notebook | Contents |
 |----------|----------|
 | `testing_estimation.ipynb` | Single-run particle filter; Monte Carlo RMSE; effect of particle count on RMSE and log-likelihood variance; noise sensitivity; empirical N-particles vs τ grid study (RMSE and log-likelihood heatmaps, KF floor comparison); resampling method comparison; `LinearTSSM` misspecification test; `LinearARMASSM` |
-| `parameter_estimation.ipynb` | MLE via Kalman log-likelihood; PMMH posterior inference; effect of N_particles on PMMH (α·σ identification ridge); effect of observation noise on parameter recoverability; model misspecification (Gaussian estimator on t or ARMA data) |
+| `parameter_estimation.ipynb` | MLE via Kalman log-likelihood; MH and PMMH posterior inference; effect of N_particles on PMMH (α·σ identification ridge); effect of observation noise on parameter recoverability; model misspecification (Gaussian estimator on t or ARMA data) |
+| `hmc_estimation.ipynb` | HMC vs MH vs MLE on `SimpleLinearGaussianSSM`: comparison table, trace plots, posterior density overlays, autocorrelation and effective sample size (ESS), joint scatter plots |
 
 ---
 
