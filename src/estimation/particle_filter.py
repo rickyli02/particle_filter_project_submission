@@ -2,6 +2,7 @@ from models.base import StateSpaceModel
 import numpy as np
 from utils import logsumexp
 from estimation.resampling_methods import ResamplingMethod
+from utils import timer
 
 class ParticleFilter:
     def __init__(self, model=None, N_particles=10000, data=None, resample_method=None, seed=None):
@@ -32,7 +33,15 @@ class ParticleFilter:
     def ESS(self):
         return 1.0 / np.sum(self.weights ** 2) if hasattr(self, 'weights') else None
 
+    @timer
     def run_filter(self):
+        '''
+        returns 
+            latent state trajectory estimate 
+            history of particles and weights
+            resampling history (=1 if resampled)
+            estimated log likelihood
+        '''
         T = self.total_time_steps
         N = self.N_particles
         loglik = 0.0
@@ -66,11 +75,21 @@ class ParticleFilter:
             else:
                 self.resample_history.append(0)
 
-        self.latent_state_estimate = np.average(self.particles, axis=0, weights=self.weights)
+        self.latent_state_estimate = self.filtered_trajectory()
 
-        return self.latent_state_estimate, self.particle_history, self.weight_history, self.resample_history, loglik
+        return self.latent_state_estimate, self.particle_history, self.weight_history, self.resample_history, float(loglik)
 
     def run_smoother(self):
         # Implementation of the particle smoother algorithm goes here
         # possibilities: forward-backward smoother, two-filter smoother, fixed-lag smoother
         pass
+
+    def filtered_trajectory(self, state_idx=0):
+        # Extract, flatten weights, and stack into a matrix (n_time_steps, n_particles)
+        W = np.stack([w.flatten() for w in self.weight_history])
+        
+        # Extract states, handle shape, and stack into a (n_time_steps, n_particles) matrix
+        X = np.stack([p if p.ndim == 1 else p[:, state_idx] for p in self.particle_history])
+        
+        # Weighted average: Multiply row-wise, sum over the particles axis, and divide by sum of weights
+        return np.einsum('ij, ij -> i', X, W) / np.sum(W, axis=1)

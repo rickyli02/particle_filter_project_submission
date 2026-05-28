@@ -42,6 +42,9 @@ def log_normal_pdf(y, mean, sd):
 
 # ── particle filter diagnostics ───────────────────────────────────────────────
 
+# Kept here for backwards compatibility. 
+# Please update code to use ParticleFilter's own filtered_trajectory method
+# which uses numpy einsum
 def filtered_trajectory(pf, state_idx=0):
     """Weighted posterior mean of state component `state_idx` at each time step."""
     out = []
@@ -51,11 +54,12 @@ def filtered_trajectory(pf, state_idx=0):
         out.append(np.average(vals, weights=w))
     return np.array(out)
 
-
+# Plan to move to ParticleFilter class
 def ess_trajectory(pf):
     """Effective sample size 1/Σw² at each time step."""
     return np.array([1.0 / np.sum(w.flatten() ** 2) for w in pf.weight_history])
 
+# Plan to move to ParticleFilter class
 def chain_ess(x, max_lag=300):
     """ESS via initial positive-sequence truncation of the normalised ACF."""
     n = len(x)

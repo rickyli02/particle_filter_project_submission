@@ -43,8 +43,11 @@ particle_filter_project/
 ├── notebooks/
 │   ├── testing_estimation.ipynb      # Filter comparisons, N-particle sweep, resampling comparison
 │   ├── parameter_estimation.ipynb    # MLE, MH, PMMH posterior inference
-│   └── hmc_estimation.ipynb          # HMC vs MH vs MLE comparison
-└── data/
+│   ├── hmc_estimation.ipynb          # HMC vs MH vs MLE comparison
+│   └── basic_results.ipynb           # Empirical study: filtering, MLE, MH, identifiability, RMSE (N=100 trials)
+├── data/                             # Data acquisition scripts (not yet implemented)
+│   └── synthetic_data.py
+└── results/                          # Output files from multi-trial notebook runs (CSV checkpoints, etc.)
 ```
 
 ---
@@ -282,6 +285,7 @@ Requires the model to implement `log_likelihood(data)`, `constrain_params`, `unc
 | `testing_estimation.ipynb` | Single-run particle filter; Monte Carlo RMSE; effect of particle count on RMSE and log-likelihood variance; noise sensitivity; empirical N-particles vs τ grid study (RMSE and log-likelihood heatmaps, KF floor comparison); resampling method comparison; `LinearTSSM` misspecification test; `LinearARMASSM` |
 | `parameter_estimation.ipynb` | MLE via Kalman log-likelihood; MH and PMMH posterior inference; effect of N_particles on PMMH (α·σ identification ridge); effect of observation noise on parameter recoverability; model misspecification (Gaussian estimator on t or ARMA data) |
 | `hmc_estimation.ipynb` | HMC vs MH vs MLE on `SimpleLinearGaussianSSM`: comparison table, trace plots, posterior density overlays, autocorrelation and effective sample size (ESS), joint scatter plots |
+| `basic_results.ipynb` | Empirical study of `SimpleLinearGaussianSSM`: filtering (PF vs KF), MLE, MH with free and fixed α, weak-identifiability ridge, N=100 multi-trial RMSE and hypothesis tests |
 
 ---
 

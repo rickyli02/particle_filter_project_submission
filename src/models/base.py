@@ -114,6 +114,9 @@ class StateSpaceModel(ABC):
         ...
 
     def generate_data(self, num_time_steps):
+        '''
+        returns latent states, observations, log_likelihood p(y_1:T | x_1:T, theta) (float)
+        '''
         states = np.zeros((num_time_steps, self.state_dim))
         observations = np.zeros((num_time_steps, self.obs_dim))
 
@@ -126,4 +129,4 @@ class StateSpaceModel(ABC):
             observations[t] = self.observation(states[t])
             log_likelihood += self.log_observation_density(observations[t], states[t])
 
-        return states, observations, log_likelihood
+        return states, observations, float(log_likelihood)
