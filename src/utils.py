@@ -112,3 +112,6 @@ def timer(func):
         print(f"{func.__qualname__}  {elapsed:.3f}s")
         return result
     return wrapper
+
+
+# Nelder-Mead optimisation
