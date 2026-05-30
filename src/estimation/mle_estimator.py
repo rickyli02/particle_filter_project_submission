@@ -160,49 +160,106 @@ class MLEEstimator:
             options={"maxiter": 2000, "ftol": 1e-12, "gtol": 1e-8},
         )
 
+    def _parse_fixed_params(self, fixed_params):
+        """Validate fixed_params and return (param_names, free_idx, fixed_idx, u_fixed)."""
+        param_names = list(self.model.params_dict.keys())
+        fixed_params = fixed_params or {}
+        for name in fixed_params:
+            if name not in param_names:
+                raise ValueError(
+                    f"fixed_params key '{name}' not in model params: {param_names}"
+                )
+        free_idx  = [i for i, n in enumerate(param_names) if n not in fixed_params]
+        fixed_idx = [i for i, n in enumerate(param_names) if n in fixed_params]
+        # Unconstrain the fixed values by substituting them into a reference vector.
+        ref = list(self.model.params)
+        for i, name in enumerate(param_names):
+            if name in fixed_params:
+                ref[i] = fixed_params[name]
+        u_ref   = np.asarray(self.model.unconstrain_params(ref), dtype=float)
+        u_fixed = u_ref[fixed_idx] if fixed_idx else np.empty(0)
+        return param_names, free_idx, fixed_idx, u_fixed
+
+    def _make_assembler(self, n, free_idx, fixed_idx, u_fixed):
+        """Return a closure that reconstructs a full unconstrained vector from free params."""
+        fi = np.array(free_idx,  dtype=int)
+        xi = np.array(fixed_idx, dtype=int)
+        def assemble(u_free: np.ndarray) -> np.ndarray:
+            full = np.empty(n)
+            if fi.size: full[fi] = u_free
+            if xi.size: full[xi] = u_fixed
+            return full
+        return assemble
+
+    def _run_restarts(self, objective, theta0_free: np.ndarray):
+        """Run the optimizer with random restarts; return the best scipy result."""
+        starts = [theta0_free] + [
+            theta0_free + self.rng.normal(0.0, self.restart_std, size=theta0_free.shape)
+            for _ in range(self.n_restarts - 1)
+        ]
+        best_opt, best_val = None, np.inf
+        for start in starts:
+            opt = minimize(objective, start, method=self.method,
+                           options={"maxiter": 2000, "ftol": 1e-12, "gtol": 1e-8})
+            if opt.fun < best_val:
+                best_val, best_opt = opt.fun, opt
+            if start % 10 == 0 and start > 0:
+                print(f"{start+1} out of {len(starts)} done...")
+        return best_opt
+
     # ── public API ────────────────────────────────────────────────────────────
     @timer
-    def fit(self, theta0=None) -> MLEResult:
+    def fit(self, theta0=None, fixed_params=None) -> MLEResult:
         """
         Fit the model by maximizing log_likelihood.
 
         Parameters
         ----------
         theta0 : array-like | None
-            Initial unconstrained parameter vector.  If None, uses
-            model.unconstrain_params(model.params) (current model state).
+            Initial unconstrained parameter vector (full dimension).
+            If None, uses model.unconstrain_params(model.params).
+        fixed_params : dict[str, float] | None
+            Map from parameter name to its fixed *constrained* value.
+            Names must be keys of model.params_dict.
+            E.g. {'alpha': 1.0} holds alpha fixed throughout optimization.
+            Parameters not listed here are optimized freely.
+            When None (default), all parameters are free.
 
         Returns
         -------
         MLEResult
         """
+        param_names, free_idx, fixed_idx, u_fixed = self._parse_fixed_params(fixed_params)
+        assemble = self._make_assembler(len(param_names), free_idx, fixed_idx, u_fixed)
+
+        def neg_loglik_free(u_free: np.ndarray) -> float:
+            try:
+                self.model.update_params(self.model.constrain_params(assemble(u_free)))
+                return -float(self.model.log_likelihood(self.data))
+            except (ValueError, LinAlgError, FloatingPointError):
+                return np.inf
+
+        self._free_indices       = free_idx
+        self._fixed_indices      = fixed_idx
+        self._assemble_full      = assemble
+        self._neg_loglik_free_fn = neg_loglik_free
+
         if theta0 is None:
-            theta0 = self.model.unconstrain_params(self.model.params)
-        theta0 = np.asarray(theta0, dtype=float)
+            full_theta0 = np.asarray(self.model.unconstrain_params(self.model.params), dtype=float)
+        else:
+            full_theta0 = np.asarray(theta0, dtype=float)
+        theta0_free = full_theta0[free_idx] if free_idx else np.empty(0)
 
-        best_opt = None
-        best_val = np.inf
-
-        starts = [theta0] + [
-            theta0 + self.rng.normal(0.0, self.restart_std, size=theta0.shape)
-            for _ in range(self.n_restarts - 1)
-        ]
-
-        for start in starts:
-            opt = self._run_once(start)
-            if opt.fun < best_val:
-                best_val = opt.fun
-                best_opt = opt
-
-        theta_mle = best_opt.x
-        constrained = self.model.constrain_params(theta_mle)
+        best_opt       = self._run_restarts(neg_loglik_free, theta0_free)
+        full_theta_mle = assemble(best_opt.x)
+        constrained    = self.model.constrain_params(full_theta_mle)
         self.model.update_params(constrained)
 
         self.result = MLEResult(
-            param_names=list(self.model.params_dict.keys()),
+            param_names=param_names,
             constrained_params=constrained,
-            unconstrained_params=theta_mle,
-            loglik=-best_val,
+            unconstrained_params=full_theta_mle,
+            loglik=-best_opt.fun,
             success=best_opt.success,
             n_evals=best_opt.nfev,
             message=best_opt.message,
@@ -217,32 +274,41 @@ class MLEEstimator:
         the delta method:  SE_constrained ≈ |J| * SE_unconstrained,
         where J is the numerical Jacobian of constrain_params at theta_mle.
 
+        When fit() was called with fixed_params, the Hessian is computed only
+        over the free parameters; fixed parameters receive NaN standard errors.
+
         Parameters
         ----------
         eps : float — finite-difference step size
 
         Returns
         -------
-        std_errors : (d,) array in constrained space, NaN where Hessian is
-                     singular or the transform is degenerate
+        std_errors : (n_params,) array in constrained space.
+                     NaN for fixed parameters and where the Hessian is singular.
         """
         if self.result is None:
             raise RuntimeError("Call fit() before compute_std_errors().")
 
-        theta_mle = self.result.unconstrained_params
-        d = len(theta_mle)
+        n_params      = len(self.result.unconstrained_params)
+        free_indices  = self._free_indices
+        fixed_indices = self._fixed_indices
+        assemble_fn   = self._assemble_full
+        neg_loglik_fn = self._neg_loglik_free_fn
 
-        # ── numerical Hessian of the negative log-likelihood ──────────────────
+        theta_mle_free = self.result.unconstrained_params[free_indices]
+        d = len(theta_mle_free)
+
+        # ── numerical Hessian of the free-param negative log-likelihood ───────
         hess = np.zeros((d, d))
         for i in range(d):
             for j in range(i, d):
                 ei = np.zeros(d); ei[i] = eps
                 ej = np.zeros(d); ej[j] = eps
                 h = (
-                    self._neg_loglik(theta_mle + ei + ej)
-                    - self._neg_loglik(theta_mle + ei - ej)
-                    - self._neg_loglik(theta_mle - ei + ej)
-                    + self._neg_loglik(theta_mle - ei - ej)
+                    neg_loglik_fn(theta_mle_free + ei + ej)
+                    - neg_loglik_fn(theta_mle_free + ei - ej)
+                    - neg_loglik_fn(theta_mle_free - ei + ej)
+                    + neg_loglik_fn(theta_mle_free - ei - ej)
                 ) / (4.0 * eps ** 2)
                 hess[i, j] = hess[j, i] = h
 
@@ -251,27 +317,26 @@ class MLEEstimator:
         except LinAlgError:
             cov_unc = np.full((d, d), np.nan)
 
-        # ── delta method: transform SE to constrained space ───────────────────
-        jac = np.zeros((d, d))
-        c0 = np.asarray(
-            list(self.model.constrain_params(theta_mle)),
-            dtype=float,
-        )
+        # ── delta method: Jacobian of constrain_params w.r.t. free unconstrained params
+        # Rows: all n_params constrained outputs; columns: d free unconstrained inputs.
+        full_mle = assemble_fn(theta_mle_free)
+        c0 = np.asarray(list(self.model.constrain_params(full_mle)), dtype=float)
+        jac = np.zeros((n_params, d))
         for i in range(d):
             ei = np.zeros(d); ei[i] = eps
             ci = np.asarray(
-                list(self.model.constrain_params(theta_mle + ei)),
+                list(self.model.constrain_params(assemble_fn(theta_mle_free + ei))),
                 dtype=float,
             )
             jac[:, i] = (ci - c0) / eps
 
         # SE_constrained[k] ≈ sqrt( Jac[k,:] @ cov_unc @ Jac[k,:].T )
-        # Non-positive variance means the Hessian is (near-)singular in that direction
-        # (e.g. identification ridge) — return nan rather than 0 to make it visible.
-        se_con = np.array([
-            np.sqrt(v) if (v := jac[k] @ cov_unc @ jac[k]) > 0 else np.nan
-            for k in range(d)
-        ])
+        # Fixed parameters and singular Hessian directions return NaN.
+        se_con = np.full(n_params, np.nan)
+        for k in range(n_params):
+            if k not in fixed_indices:
+                v = jac[k] @ cov_unc @ jac[k]
+                se_con[k] = np.sqrt(v) if v > 0 else np.nan
 
         self.result.std_errors = se_con
         return se_con

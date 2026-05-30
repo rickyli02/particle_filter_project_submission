@@ -1,245 +1,9 @@
 import numpy as np
-from scipy.stats import multivariate_normal
+from scipy.stats import multivariate_normal, norm
 from scipy.linalg import solve_discrete_lyapunov, cho_factor, cho_solve
 from utils import log_normal_pdf_scalar, symmetrize
 from estimation.resampling_methods import systematic_resample
 from models.base import StateSpaceModel
-
-
-
-# Simple Linear Gaussian state-space model, 1D latent state and observation
-# Question: should the observation equation include a constant intercept? y_t = mu + alpha * x_t + nu_t
-class SimpleLinearGaussianSSM(StateSpaceModel):
-    def __init__(self, phi, alpha, sigma2, tau2, seed=None):
-        super().__init__(seed=seed, state_dim=1, obs_dim=1)
-        self.phi = phi
-        self.alpha = alpha
-        self.sigma2 = sigma2
-        self.tau2 = tau2
-        self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma2': sigma2, 'tau2': tau2}
-
-        self.rng = np.random.default_rng(seed)
-        self.check_params_validity()
-
-    def check_params_validity(self):
-        if abs(self.phi) >= 1:
-            raise ValueError(f"phi={self.phi}: latent process is not stationary (require |phi| < 1).")
-        if self.sigma2 <= 0:
-            raise ValueError(f"sigma2={self.sigma2}: process noise variance must be positive.")
-        if self.tau2 <= 0:
-            raise ValueError(f"tau2={self.tau2}: observation noise variance must be positive.")
-
-    def __repr__(self):
-        return (
-            f"SimpleLinearGaussianSSM("
-            f"phi={self.phi!r}, alpha={self.alpha!r}, "
-            f"sigma2={self.sigma2!r}, tau2={self.tau2!r})"
-        )
-
-    def describe(self):
-        return (
-            f"{self.__class__.__name__}\n"
-            f"  Simple linear Gaussian SSM — 1D latent state and observation\n"
-            f"  Parameters: {self.params_dict}\n"
-            f"  Transition:  x_t = {self.phi} * x_(t-1) + eps_t,   eps_t ~ N(0, {self.sigma2})\n"
-            f"  Observation: y_t = {self.alpha} * x_t + nu_t,       nu_t  ~ N(0, {self.tau2})\n"
-            f"  Initial:     x_0 ~ N(0, {self.stationary_var:.6g})  [stationary]"
-        )
-
-    def update_params(self, constrained_params):
-        phi, alpha, sigma2, tau2 = constrained_params
-        self.phi = phi
-        self.alpha = alpha
-        self.sigma2 = sigma2
-        self.tau2 = tau2
-        self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma2': sigma2, 'tau2': tau2}
-        self.check_params_validity()
-
-    @property
-    def stationary_var(self):
-        return self.sigma2 / (1 - self.phi ** 2) if abs(self.phi) < 1 else np.inf
-    
-
-    def sample_initial_distribution(self):
-        # x_0 ~ N(0, sigma^2 / (1 - phi^2)) for stationarity
-        return self.rng.normal(0, np.sqrt(self.stationary_var))
-
-    def initial_density(self, x):
-        from scipy.stats import norm
-        return norm.pdf(x, loc=0, scale=np.sqrt(self.stationary_var))
-
-    def transition(self, x_prev):
-        # x_next = phi * x_prev + eps,   eps ~ N(0, sigma2)
-        # deal with cases where x_next is a scalar and a numpy array
-        if np.isscalar(x_prev):
-            x_prev = np.array([x_prev])
-        return self.phi * x_prev + self.rng.normal(0, np.sqrt(self.sigma2), size=x_prev.shape)
-
-    def observation(self, x):
-        # y_t = alpha * x_t + eta,   eta ~ N(0, tau2)
-        if np.isscalar(x):
-            x = np.array([x])
-        return self.alpha * x + self.rng.normal(0, np.sqrt(self.tau2), size=x.shape)
-
-    def unconstrain_params(self, constrained_params):
-        # Note that unconstraining parameters can lead to "boundary compression" problems
-        # MCMC samplers will have a hard time estimating near boundaries, as they go to infinity
-        phi, alpha, sigma2, tau2 = constrained_params
-        return np.array([np.arctanh(phi), alpha, np.log(sigma2), np.log(tau2)])
-
-    def constrain_params(self, unconstrained_params):
-        u_phi, u_alpha, u_sigma2, u_tau2 = unconstrained_params
-        return [float(np.tanh(u_phi)), float(u_alpha),
-                float(np.exp(u_sigma2)), float(np.exp(u_tau2))]
-
-    def jacobian_constrain_params(self, unconstrained_params):
-        """
-        Diagonal Jacobian of constrain_params at unconstrained_params.
-
-        Returns a (4, 4) diagonal matrix J where J[k, k] = d(θ_con[k]) / d(θ_unc[k]):
-          phi   : d(tanh(u)) / du    = 1 - tanh²(u) = 1 - phi²
-          alpha : d(u) / du          = 1
-          sigma2: d(exp(u)) / du     = exp(u) = sigma²
-          tau2  : d(exp(u)) / du     = exp(u) = tau²
-        """
-        u_phi, _, u_sigma2, u_tau2 = unconstrained_params
-        return np.diag([
-            1.0 - np.tanh(u_phi) ** 2,
-            1.0,
-            np.exp(u_sigma2),
-            np.exp(u_tau2),
-        ])
-
-    def log_transition_density(self, x_next, x_prev):
-        return log_normal_pdf_scalar(x_next, self.phi * x_prev, self.sigma2)
-
-    def log_observation_density(self, y, x):
-        return log_normal_pdf_scalar(y, self.alpha * x, self.tau2)
-
-    def log_likelihood(self, y):
-        """
-        Exact log p(y_{0:T-1} | theta) available for linear Gaussian SSM
-        Computed via scalar Kalman filter recursion.
-
-        y_t | y_{0:t-1} ~ N(alpha * mu_{t|t-1},  alpha^2 * P_{t|t-1} + tau^2)
-
-        Unconditional marginal covariance (used as a sanity reference):
-            E[y_t] = 0
-            # Cov(y_s, y_t) = alpha^2 * phi^|t-s| * sigma^2/(1-phi^2) + tau^2 * 1_{s=t}
-        """
-        y = np.asarray(y, dtype=float).ravel()
-        T = len(y)
-
-        mu = 0.0
-        P = self.stationary_var   # sigma^2 / (1 - phi^2)
-
-        loglik = 0.0
-        for t in range(T):
-            # predicted observation variance and innovation
-            S = self.alpha ** 2 * P + self.tau2
-            v = y[t] - self.alpha * mu
-
-            loglik -= 0.5 * (np.log(2.0 * np.pi * S) + v ** 2 / S)
-
-            # update (Joseph form keeps P non-negative)
-            K  = self.alpha * P / S
-            mu = mu + K * v
-            P  = (1.0 - K * self.alpha) ** 2 * P + K ** 2 * self.tau2
-
-            # predict for t+1
-            if t < T - 1:
-                mu = self.phi * mu
-                P  = self.phi ** 2 * P + self.sigma2
-
-        return loglik
-
-    def score(self, y):
-        """
-        Gradient of log p(y_{0:T-1} | theta) w.r.t. theta = (phi, alpha, sigma2, tau2).
-
-        Propagates analytic sensitivities of (m, P) through the Kalman recursion in one
-        forward pass.  Cost is O(T), same order as log_likelihood itself.
-
-        Returns shape-(4,) array  [d/dphi, d/dalpha, d/dsigma2, d/dtau2].
-        """
-        y = np.asarray(y, dtype=float).ravel()
-        T = len(y)
-        phi, alpha, sigma2, tau2 = self.phi, self.alpha, self.sigma2, self.tau2
-        phi2 = phi ** 2
-        one_minus_phi2 = 1.0 - phi2
-
-        # Stationary init: mu0 = 0,  P0 = sigma2 / (1 - phi^2)
-        mu = 0.0
-        P  = sigma2 / one_minus_phi2
-
-        # Sensitivities of (mu, P) w.r.t. (phi, alpha, sigma2, tau2), indices 0-3
-        dmu = np.zeros(4)
-        dp  = np.array([
-            2.0 * phi * sigma2 / one_minus_phi2 ** 2,  # dP0/dphi
-            0.0,                                         # dP0/dalpha
-            1.0 / one_minus_phi2,                        # dP0/dsigma2
-            0.0,                                         # dP0/dtau2
-        ])
-
-        grad = np.zeros(4)
-
-        for t in range(T):
-            s     = alpha ** 2 * P + tau2
-            v     = y[t] - alpha * mu
-            inv_s = 1.0 / s
-
-            # dS/dtheta
-            ds    = alpha ** 2 * dp
-            ds[1] += 2.0 * alpha * P   # d(alpha^2 P)/dalpha
-            ds[3] += 1.0               # d(tau2)/dtau2
-
-            # dv/dtheta
-            dv    = -alpha * dmu
-            dv[1] -= mu                # d(-alpha*mu)/dalpha
-
-            # Score contribution from ell_t = -0.5*(log(2pi*S) + v^2/S)
-            r     = v * inv_s          # v / S
-            grad += -0.5 * (ds * inv_s * (1.0 - v * r) + 2.0 * r * dv)
-
-            # Kalman gain and its sensitivity
-            k  = alpha * P * inv_s
-            dk = (alpha * dp - k * ds) * inv_s
-            dk[1] += P * inv_s         # d(alpha*P/S)/dalpha
-
-            # Updated mean
-            mu_up  = mu + k * v
-            dmu_up = dmu + dk * v + k * dv
-
-            # Updated variance (Joseph form)  P_{t|t} = c^2*P + k^2*tau2
-            c      = 1.0 - k * alpha
-            dc     = -dk * alpha
-            dc[1] -= k                 # d(1 - k*alpha)/dalpha includes -k
-            p_up   = c ** 2 * P + k ** 2 * tau2
-            dp_up  = 2.0 * c * dc * P + c ** 2 * dp + 2.0 * k * dk * tau2
-            dp_up[3] += k ** 2         # d(k^2*tau2)/dtau2
-
-            if t < T - 1:
-                # Predict  m_{t+1|t} = phi * m_{t|t}
-                dmu    = phi * dmu_up
-                dmu[0] += mu_up              # d(phi*m)/dphi
-
-                # Predict  P_{t+1|t} = phi^2 * P_{t|t} + sigma2
-                dp    = phi2 * dp_up
-                dp[0] += 2.0 * phi * p_up   # d(phi^2*P)/dphi
-                dp[2] += 1.0                 # d(sigma2)/dsigma2
-
-                mu = phi * mu_up
-                P  = phi2 * p_up + sigma2
-
-        return grad
-
-    # closed form Hessian of log p(y_{0:T-1} | theta)
-    def hessian_log_likelihood(self, y):
-        '''
-        Hessian of log p(y_{0:T-1} | theta)
-        '''
-        raise NotImplementedError
-
 
 
 # General multivariate linear Gaussian state-space model
@@ -399,3 +163,270 @@ class LinearGaussianSSM(StateSpaceModel):
                 P  = symmetrize(A @ P @ A.T + Q)
 
         return loglik
+
+
+# Simple 1D linear Gaussian SSM, implemented as a LinearGaussianSSM subclass.
+#
+#   Transition:  x_t = phi * x_{t-1} + eps_t,   eps_t ~ N(0, sigma2)
+#   Observation: y_t = alpha * x_t + nu_t,       nu_t  ~ N(0, tau2)
+#   Initial:     x_0 ~ N(0, sigma2 / (1 - phi^2))  [stationary]
+#
+# Parameterized by theta = (phi, alpha, sigma2, tau2).
+# Scalar properties and the (unconstrain/constrain/update)_params interface are
+# kept for backward compatibility with existing callers and estimators.
+# Because it is a LinearGaussianSSM subclass, KalmanFilter accepts it directly.
+#
+# log_likelihood and score use the fast scalar Kalman recursion; transition and
+# observation keep batched-particle support for use with the particle filter.
+class SimpleLinearGaussianSSM(LinearGaussianSSM):
+    def __init__(self, phi, alpha, sigma2, tau2, seed=None):
+        # Validate before super() so the error messages are readable (super() calls
+        # _stationary_distribution which raises a less specific message for phi >= 1).
+        if abs(phi) >= 1:
+            raise ValueError(f"phi={phi}: latent process is not stationary (require |phi| < 1).")
+        if sigma2 <= 0:
+            raise ValueError(f"sigma2={sigma2}: process noise variance must be positive.")
+        if tau2 <= 0:
+            raise ValueError(f"tau2={tau2}: observation noise variance must be positive.")
+        super().__init__(
+            a=np.array([[phi]]),
+            c=np.array([[alpha]]),
+            q=np.array([[sigma2]]),
+            r=np.array([[tau2]]),
+            seed=seed,
+        )
+        # Override params_dict to expose scalar names instead of matrix names.
+        self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma2': sigma2, 'tau2': tau2}
+
+    # ── scalar properties (backward compat) ───────────────────────────────────
+
+    @property
+    def phi(self):    return float(self.A[0, 0])
+
+    @property
+    def alpha(self):  return float(self.C[0, 0])
+
+    @property
+    def sigma2(self): return float(self.Q[0, 0])
+
+    @property
+    def tau2(self):   return float(self.R[0, 0])
+
+    @property
+    def stationary_var(self):
+        return self.sigma2 / (1 - self.phi ** 2) if abs(self.phi) < 1 else np.inf
+
+    # ── validity ──────────────────────────────────────────────────────────────
+
+    def check_params_validity(self):
+        super().check_params_validity()   # shapes, Q PSD, R PD
+        if abs(self.phi) >= 1:
+            raise ValueError(
+                f"phi={self.phi}: latent process is not stationary (require |phi| < 1)."
+            )
+
+    # ── string representation ─────────────────────────────────────────────────
+
+    def __repr__(self):
+        return (
+            f"SimpleLinearGaussianSSM("
+            f"phi={self.phi!r}, alpha={self.alpha!r}, "
+            f"sigma2={self.sigma2!r}, tau2={self.tau2!r})"
+        )
+
+    def describe(self):
+        return (
+            f"{self.__class__.__name__}\n"
+            f"  Simple linear Gaussian SSM — 1D latent state and observation\n"
+            f"  Parameters: {self.params_dict}\n"
+            f"  Transition:  x_t = {self.phi} * x_(t-1) + eps_t,   eps_t ~ N(0, {self.sigma2})\n"
+            f"  Observation: y_t = {self.alpha} * x_t + nu_t,       nu_t  ~ N(0, {self.tau2})\n"
+            f"  Initial:     x_0 ~ N(0, {self.stationary_var:.6g})  [stationary]"
+        )
+
+    # ── parameter interface ───────────────────────────────────────────────────
+
+    def update_params(self, constrained_params):
+        phi, alpha, sigma2, tau2 = constrained_params
+        # Update the underlying matrices via the parent (also calls check_params_validity).
+        super().update_params({
+            'A': np.array([[phi]]),
+            'C': np.array([[alpha]]),
+            'Q': np.array([[sigma2]]),
+            'R': np.array([[tau2]]),
+            'b': np.zeros(1),
+            'd': np.zeros(1),
+        })
+        # Refresh the stationary initial distribution (phi and sigma2 may have changed).
+        # LinearGaussianSSM.update_params does not do this automatically.
+        self.mu_0, self.P_0 = self._stationary_distribution()
+        # Restore the scalar params_dict (parent overwrites it with matrix keys).
+        self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma2': sigma2, 'tau2': tau2}
+
+    def unconstrain_params(self, constrained_params):
+        # Note: unconstraining near boundaries compresses the posterior — MCMC
+        # samplers work better in the unconstrained space.
+        phi, alpha, sigma2, tau2 = constrained_params
+        return np.array([np.arctanh(phi), alpha, np.log(sigma2), np.log(tau2)])
+
+    def constrain_params(self, unconstrained_params):
+        u_phi, u_alpha, u_sigma2, u_tau2 = unconstrained_params
+        return [float(np.tanh(u_phi)), float(u_alpha),
+                float(np.exp(u_sigma2)), float(np.exp(u_tau2))]
+
+    def jacobian_constrain_params(self, unconstrained_params):
+        """
+        Diagonal Jacobian of constrain_params at unconstrained_params.
+
+        Returns a (4, 4) diagonal matrix J where J[k, k] = d(θ_con[k]) / d(θ_unc[k]):
+          phi   : d(tanh(u)) / du    = 1 - tanh²(u) = 1 - phi²
+          alpha : d(u) / du          = 1
+          sigma2: d(exp(u)) / du     = exp(u) = sigma²
+          tau2  : d(exp(u)) / du     = exp(u) = tau²
+        """
+        u_phi, _, u_sigma2, u_tau2 = unconstrained_params
+        return np.diag([
+            1.0 - np.tanh(u_phi) ** 2,
+            1.0,
+            np.exp(u_sigma2),
+            np.exp(u_tau2),
+        ])
+
+    # ── sampling and densities ────────────────────────────────────────────────
+    # Scalar / batched-particle overrides (parent uses multivariate_normal which
+    # does not broadcast over N particles).
+
+    def sample_initial_distribution(self):
+        return self.rng.normal(0, np.sqrt(self.stationary_var))
+
+    def initial_density(self, x):
+        return norm.pdf(x, loc=0, scale=np.sqrt(self.stationary_var))
+
+    def transition(self, x_prev):
+        if np.isscalar(x_prev):
+            x_prev = np.array([x_prev])
+        return self.phi * x_prev + self.rng.normal(0, np.sqrt(self.sigma2), size=x_prev.shape)
+
+    def observation(self, x):
+        if np.isscalar(x):
+            x = np.array([x])
+        return self.alpha * x + self.rng.normal(0, np.sqrt(self.tau2), size=x.shape)
+
+    def log_transition_density(self, x_next, x_prev):
+        return log_normal_pdf_scalar(x_next, self.phi * x_prev, self.sigma2)
+
+    def log_observation_density(self, y, x):
+        return log_normal_pdf_scalar(y, self.alpha * x, self.tau2)
+
+    # ── log-likelihood and score ──────────────────────────────────────────────
+    # Fast scalar Kalman recursion — O(T) without any matrix operations.
+
+    def log_likelihood(self, y):
+        """
+        Exact log p(y_{0:T-1} | theta) via scalar Kalman filter recursion.
+
+        y_t | y_{0:t-1} ~ N(alpha * mu_{t|t-1},  alpha^2 * P_{t|t-1} + tau^2)
+        Initial:  mu_0 = 0,  P_0 = sigma^2 / (1 - phi^2)  [stationary]
+        """
+        y = np.asarray(y, dtype=float).ravel()
+        T = len(y)
+
+        mu = 0.0
+        P  = self.stationary_var
+
+        loglik = 0.0
+        for t in range(T):
+            S = self.alpha ** 2 * P + self.tau2
+            v = y[t] - self.alpha * mu
+
+            loglik -= 0.5 * (np.log(2.0 * np.pi * S) + v ** 2 / S)
+
+            K  = self.alpha * P / S
+            mu = mu + K * v
+            P  = (1.0 - K * self.alpha) ** 2 * P + K ** 2 * self.tau2
+
+            if t < T - 1:
+                mu = self.phi * mu
+                P  = self.phi ** 2 * P + self.sigma2
+
+        return loglik
+
+    def score(self, y):
+        """
+        Gradient of log p(y_{0:T-1} | theta) w.r.t. theta = (phi, alpha, sigma2, tau2).
+
+        Propagates analytic sensitivities of (mu, P) through the Kalman recursion in one
+        forward pass.  Cost is O(T), same order as log_likelihood itself.
+
+        Returns shape-(4,) array  [d/dphi, d/dalpha, d/dsigma2, d/dtau2].
+        """
+        y = np.asarray(y, dtype=float).ravel()
+        T = len(y)
+        phi, alpha, sigma2, tau2 = self.phi, self.alpha, self.sigma2, self.tau2
+        phi2 = phi ** 2
+        one_minus_phi2 = 1.0 - phi2
+
+        mu = 0.0
+        P  = sigma2 / one_minus_phi2
+
+        # Sensitivities of (mu, P) w.r.t. (phi, alpha, sigma2, tau2), indices 0-3
+        dmu = np.zeros(4)
+        dp  = np.array([
+            2.0 * phi * sigma2 / one_minus_phi2 ** 2,  # dP0/dphi
+            0.0,                                         # dP0/dalpha
+            1.0 / one_minus_phi2,                        # dP0/dsigma2
+            0.0,                                         # dP0/dtau2
+        ])
+
+        grad = np.zeros(4)
+
+        for t in range(T):
+            s     = alpha ** 2 * P + tau2
+            v     = y[t] - alpha * mu
+            inv_s = 1.0 / s
+
+            # dS/dtheta
+            ds    = alpha ** 2 * dp
+            ds[1] += 2.0 * alpha * P
+            ds[3] += 1.0
+
+            # dv/dtheta
+            dv    = -alpha * dmu
+            dv[1] -= mu
+
+            # Score contribution: ell_t = -0.5*(log(2pi*S) + v^2/S)
+            r     = v * inv_s
+            grad += -0.5 * (ds * inv_s * (1.0 - v * r) + 2.0 * r * dv)
+
+            # Kalman gain and its sensitivity
+            k  = alpha * P * inv_s
+            dk = (alpha * dp - k * ds) * inv_s
+            dk[1] += P * inv_s
+
+            # Updated mean and its sensitivity
+            mu_up  = mu + k * v
+            dmu_up = dmu + dk * v + k * dv
+
+            # Updated variance (Joseph form): P_{t|t} = c^2*P + k^2*tau2
+            c      = 1.0 - k * alpha
+            dc     = -dk * alpha
+            dc[1] -= k
+            p_up   = c ** 2 * P + k ** 2 * tau2
+            dp_up  = 2.0 * c * dc * P + c ** 2 * dp + 2.0 * k * dk * tau2
+            dp_up[3] += k ** 2
+
+            if t < T - 1:
+                dmu    = phi * dmu_up
+                dmu[0] += mu_up
+
+                dp    = phi2 * dp_up
+                dp[0] += 2.0 * phi * p_up
+                dp[2] += 1.0
+
+                mu = phi * mu_up
+                P  = phi2 * p_up + sigma2
+
+        return grad
+
+    def hessian_log_likelihood(self, y):
+        raise NotImplementedError
