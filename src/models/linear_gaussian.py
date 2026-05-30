@@ -430,3 +430,266 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
 
     def hessian_log_likelihood(self, y):
         raise NotImplementedError
+
+
+# Unconstrained LG-SSM — all matrix entries free (subject to structural constraints).
+#
+# Parametrization choices:
+#   A  : lower triangular; diagonal via tanh (spectral radius < 1 guaranteed)
+#   Q  : Q = L L^T,  L lower triangular with positive diagonal (Cholesky)
+#   C  : free (m × n)
+#   R  : diagonal; log-variance transform (positive diagonal guaranteed)
+#   b  : free (n,)  — transition intercept
+#   d  : free (m,)  — observation intercept
+#
+# Flat params layout (n = n_latent, m = n_obs):
+#   [ A_lower_triangular  (n(n+1)/2),   ← diagonal entries ∈ (-1, 1) via tanh
+#     L_lower_triangular  (n(n+1)/2),   ← diagonal entries > 0
+#     C_row_major         (m × n),
+#     R_variances         (m,),          ← stored as raw variances
+#     b                   (n,),
+#     d                   (m,) ]
+#
+# Identification warning:
+#   Without structural restrictions the latent states are identified only up to
+#   an invertible linear transformation. Weak identifiability is the norm; MLE
+#   with multiple random restarts may converge to different solutions that give
+#   nearly equal log-likelihoods.
+class FreeLinearGaussianSSM(LinearGaussianSSM):
+    """
+    Unconstrained LG-SSM with user-specified latent dimension.
+
+    Parameters
+    ----------
+    n_latent : int
+        Latent state dimension.
+    n_obs : int
+        Observation dimension.
+    A_init : (n, n) array | None
+        Initial lower-triangular transition matrix. Defaults to 0.5 * I.
+    Q_L_init : (n, n) array | None
+        Initial Cholesky factor of Q. Defaults to I.
+    C_init : (m, n) array | None
+        Initial observation matrix. Defaults to small random N(0, 0.1) entries.
+    R_vars_init : (m,) array | None
+        Initial observation noise variances. Defaults to ones.
+    b_init : (n,) array | None
+        Transition intercept. Defaults to zeros.
+    d_init : (m,) array | None
+        Observation intercept. Defaults to zeros.
+    seed : int | None
+    """
+
+    def __init__(
+        self,
+        n_latent, n_obs,
+        A_init=None, Q_L_init=None, C_init=None,
+        R_vars_init=None, b_init=None, d_init=None,
+        seed=None,
+    ):
+        rng = np.random.default_rng(seed)
+        self._n = int(n_latent)
+        self._m = int(n_obs)
+        n, m = self._n, self._m
+
+        if A_init is None:
+            A_init = 0.5 * np.eye(n)
+        else:
+            A_init = np.tril(np.asarray(A_init, dtype=float))
+
+        if Q_L_init is None:
+            Q_L_init = np.eye(n)
+        else:
+            Q_L_init = np.tril(np.asarray(Q_L_init, dtype=float))
+
+        if C_init is None:
+            C_init = rng.normal(0, 0.1, size=(m, n))
+        else:
+            C_init = np.asarray(C_init, dtype=float)
+
+        if R_vars_init is None:
+            R_vars_init = np.ones(m)
+        else:
+            R_vars_init = np.asarray(R_vars_init, dtype=float)
+
+        if b_init is None:
+            b_init = np.zeros(n)
+        else:
+            b_init = np.asarray(b_init, dtype=float)
+
+        if d_init is None:
+            d_init = np.zeros(m)
+        else:
+            d_init = np.asarray(d_init, dtype=float)
+
+        self._Q_L = Q_L_init.copy()
+
+        super().__init__(
+            a=A_init,
+            c=C_init,
+            q=Q_L_init @ Q_L_init.T,
+            r=np.diag(R_vars_init),
+            b=b_init,
+            d=d_init,
+            seed=seed,
+        )
+        # Stationary mu_0/P_0 already set by super().__init__ (mu_0/p_0 were None).
+        self.params_dict = self._make_params_dict(
+            A_init, Q_L_init, C_init, R_vars_init, b_init, d_init
+        )
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _tril_idx(n):
+        """Lower-triangular (i, j) pairs in row-major order."""
+        return [(i, j) for i in range(n) for j in range(i + 1)]
+
+    def _make_params_dict(self, A, Q_L, C, R_vars, b, d):
+        n, m = self._n, self._m
+        out = {}
+        for i, j in self._tril_idx(n):
+            out[f'A_{i}{j}'] = float(A[i, j])
+        for i, j in self._tril_idx(n):
+            out[f'L_{i}{j}'] = float(Q_L[i, j])
+        for i in range(m):
+            for j in range(n):
+                out[f'C_{i}{j}'] = float(C[i, j])
+        for k in range(m):
+            out[f'R_{k}'] = float(R_vars[k])
+        for i in range(n):
+            out[f'b_{i}'] = float(b[i])
+        for k in range(m):
+            out[f'd_{k}'] = float(d[k])
+        return out
+
+    def _unpack(self, constrained_params):
+        n, m = self._n, self._m
+        v = list(constrained_params)
+        ptr = 0
+
+        A = np.zeros((n, n))
+        for i, j in self._tril_idx(n):
+            A[i, j] = v[ptr]; ptr += 1
+
+        Q_L = np.zeros((n, n))
+        for i, j in self._tril_idx(n):
+            Q_L[i, j] = v[ptr]; ptr += 1
+
+        C      = np.array(v[ptr:ptr + m * n], dtype=float).reshape(m, n); ptr += m * n
+        R_vars = np.array(v[ptr:ptr + m],     dtype=float);               ptr += m
+        b      = np.array(v[ptr:ptr + n],     dtype=float);               ptr += n
+        d      = np.array(v[ptr:ptr + m],     dtype=float)
+
+        return A, Q_L, C, R_vars, b, d
+
+    # ── parameter interface ───────────────────────────────────────────────────
+
+    def update_params(self, constrained_params):
+        A, Q_L, C, R_vars, b, d = self._unpack(constrained_params)
+        self._Q_L = Q_L
+        super().update_params({
+            'A': A, 'C': C,
+            'Q': Q_L @ Q_L.T,
+            'R': np.diag(R_vars),
+            'b': b, 'd': d,
+        })
+        self.mu_0, self.P_0 = self._stationary_distribution()
+        self.params_dict = self._make_params_dict(A, Q_L, C, R_vars, b, d)
+
+    def unconstrain_params(self, constrained_params):
+        n, m = self._n, self._m
+        A, Q_L, C, R_vars, b, d = self._unpack(constrained_params)
+        u = []
+        for i, j in self._tril_idx(n):
+            u.append(
+                float(np.arctanh(np.clip(A[i, i], -1 + 1e-7, 1 - 1e-7))) if i == j
+                else float(A[i, j])
+            )
+        for i, j in self._tril_idx(n):
+            u.append(float(np.log(Q_L[i, i])) if i == j else float(Q_L[i, j]))
+        u.extend(C.ravel().tolist())
+        u.extend(np.log(R_vars).tolist())
+        u.extend(b.tolist())
+        u.extend(d.tolist())
+        return np.array(u)
+
+    def constrain_params(self, unconstrained_params):
+        n, m = self._n, self._m
+        u = list(unconstrained_params)
+        ptr = 0
+
+        A = np.zeros((n, n))
+        for i, j in self._tril_idx(n):
+            A[i, j] = float(np.tanh(u[ptr])) if i == j else float(u[ptr])
+            ptr += 1
+
+        Q_L = np.zeros((n, n))
+        for i, j in self._tril_idx(n):
+            Q_L[i, j] = float(np.exp(u[ptr])) if i == j else float(u[ptr])
+            ptr += 1
+
+        C      = np.array(u[ptr:ptr + m * n], dtype=float); ptr += m * n
+        R_vars = np.exp(np.array(u[ptr:ptr + m], dtype=float)); ptr += m
+        b      = np.array(u[ptr:ptr + n], dtype=float); ptr += n
+        d      = np.array(u[ptr:ptr + m], dtype=float)
+
+        return (
+            [A[i, j]   for i, j in self._tril_idx(n)]
+            + [Q_L[i, j] for i, j in self._tril_idx(n)]
+            + C.tolist()
+            + R_vars.tolist()
+            + b.tolist()
+            + d.tolist()
+        )
+
+    def jacobian_constrain_params(self, unconstrained_params):
+        """
+        Diagonal Jacobian of constrain_params.
+
+        Diagonal entries:
+          A_ii  : 1 - tanh²(u)    A_ij (i>j): 1
+          L_ii  : exp(u)           L_ij (i>j): 1
+          C_ij  : 1
+          R_k   : exp(u)
+          b_i   : 1
+          d_k   : 1
+        """
+        n, m = self._n, self._m
+        u = np.asarray(unconstrained_params)
+        diag = []
+        ptr = 0
+
+        for i, j in self._tril_idx(n):
+            diag.append(1.0 - np.tanh(u[ptr]) ** 2 if i == j else 1.0)
+            ptr += 1
+
+        for i, j in self._tril_idx(n):
+            diag.append(float(np.exp(u[ptr])) if i == j else 1.0)
+            ptr += 1
+
+        diag.extend([1.0] * (m * n)); ptr += m * n
+        for _ in range(m):
+            diag.append(float(np.exp(u[ptr]))); ptr += 1
+        diag.extend([1.0] * (n + m))
+
+        return np.diag(diag)
+
+    # ── representation ────────────────────────────────────────────────────────
+
+    def __repr__(self):
+        return f"FreeLinearGaussianSSM(n_latent={self._n}, n_obs={self._m})"
+
+    def describe(self):
+        n, m = self._n, self._m
+        spec_rad = float(np.abs(np.linalg.eigvals(self.A)).max())
+        n_params = n * (n + 1) + m * n + 2 * m + n
+        return (
+            f"FreeLinearGaussianSSM\n"
+            f"  n_latent={n}, n_obs={m},  total free params={n_params}\n"
+            f"  A lower triangular, spectral radius={spec_rad:.4f}\n"
+            f"  Q = L L^T  (Cholesky;  L lower triangular)\n"
+            f"  R = diag({np.diag(self.R).round(4).tolist()})\n"
+            f"  b={self.b.round(4).tolist()},  d={self.d.round(4).tolist()}\n"
+            f"  Initial: x_0 ~ N(mu_0, P_0)  [stationary]"
+        )

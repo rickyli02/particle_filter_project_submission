@@ -198,13 +198,13 @@ class MLEEstimator:
             for _ in range(self.n_restarts - 1)
         ]
         best_opt, best_val = None, np.inf
-        for start in starts:
+        for i, start in enumerate(starts):
             opt = minimize(objective, start, method=self.method,
                            options={"maxiter": 2000, "ftol": 1e-12, "gtol": 1e-8})
             if opt.fun < best_val:
                 best_val, best_opt = opt.fun, opt
-            if start % 10 == 0 and start > 0:
-                print(f"{start+1} out of {len(starts)} done...")
+
+            print(f"Restart {i}/{self.n_restarts} best val: {best_val}")
         return best_opt
 
     # ── public API ────────────────────────────────────────────────────────────
