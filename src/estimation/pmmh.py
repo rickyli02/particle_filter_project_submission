@@ -162,6 +162,12 @@ class BlockPMMH(PMMH):
     particle filter for each.  This improves mixing when parameters have very
     different scales or are weakly coupled.
 
+    Fixing parameters: to hold a subset of parameters constant, define a
+    subclassed model whose params_dict omits those parameters and whose
+    constrain/unconstrain/update_params methods operate only on the free
+    parameters (see FixedAlphaSSM in the notebooks for an example).  The
+    blocks then index into the free-parameter vector only.
+
     Parameters
     ----------
     blocks : list of list of int, or None
