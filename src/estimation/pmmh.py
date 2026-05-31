@@ -85,7 +85,7 @@ class PMMH(MCMCBase):
         self.pf.weight_history.clear()
         self.pf.resample_history.clear()
 
-        *_, loglik = self.pf.run_filter()
+        *_, loglik = self.pf.run_filter(verbose=False)
         return loglik if np.isfinite(loglik) else -np.inf
 
     # ── main sampler ──────────────────────────────────────────────────────────

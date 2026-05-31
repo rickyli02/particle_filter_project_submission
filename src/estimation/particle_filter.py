@@ -1,8 +1,8 @@
 from models.base import StateSpaceModel
 import numpy as np
+import time
 from utils import logsumexp
 from estimation.resampling_methods import ResamplingMethod
-from utils import timer
 
 class ParticleFilter:
     def __init__(self, model=None, N_particles=10000, data=None, resample_method=None, seed=None):
@@ -33,34 +33,55 @@ class ParticleFilter:
     def ESS(self):
         return 1.0 / np.sum(self.weights ** 2) if hasattr(self, 'weights') else None
 
-    @timer
-    def run_filter(self):
+    def run_filter(self, verbose=True):
         '''
-        returns 
-            latent state trajectory estimate 
+        returns
+            latent state trajectory estimate
             history of particles and weights
             resampling history (=1 if resampled)
             estimated log likelihood
         '''
+        _t0 = time.perf_counter()
         T = self.total_time_steps
         N = self.N_particles
         loglik = 0.0
 
+        # Reset history
+        self.particle_history = []
+        self.weight_history = []
+        self.resample_history = []
+
+        # Initialize x_0
         self.particles = np.array([self.model.sample_initial_distribution() for _ in range(N)])
         self.weights = np.ones(N) / N
 
+        # Weight y_0 using x_0
+
         for t in range(T):
-            # Propagate particles through transition model
+            # Propagate particles through transition model x_t ~ p(x_t | x_{t-1})
             self.particles = np.array([self.model.transition(p) for p in self.particles])
 
             # Compute log-weights and accumulate marginal log-likelihood
             y_t = self.data[t]
-            log_weights = np.array([self.model.log_observation_density(y_t, p) for p in self.particles]).flatten()
-            loglik += logsumexp(log_weights) - np.log(N)
+
+            # Compute g(y_t | x_t^{i}) for y_t ~ g(y_t | x_t)
+            log_g = np.array([
+                self.model.log_observation_density(y_t, p)
+                for p in self.particles
+            ]).flatten()
+
+            # include previous weights
+            log_prev_w = np.log(self.weights + 1e-300)
+            log_unnorm_w = log_prev_w + log_g
+
+            # Marginal likelihood increment
+            # log hat p(y_t | y_{0:t-1}) = log sum_i exp(log W_{t-1}^{i} + log g(y_t | x_t^{i})) = log sum_i W_{t-1}^{i} g(y_t | x_t^{i})
+            log_inc = logsumexp(log_unnorm_w)
+            loglik += log_inc
 
             # Normalize weights
-            log_weights -= log_weights.max()
-            self.weights = np.exp(log_weights)
+            log_norm_w = log_unnorm_w - log_inc
+            self.weights = np.exp(log_norm_w)
             self.weights /= self.weights.sum()
 
             # Store history (before resampling — standard SMC convention)
@@ -77,6 +98,8 @@ class ParticleFilter:
 
         self.latent_state_estimate = self.filtered_trajectory()
 
+        if verbose:
+            print(f"ParticleFilter.run_filter  {time.perf_counter() - _t0:.3f}s")
         return self.latent_state_estimate, self.particle_history, self.weight_history, self.resample_history, float(loglik)
 
     def run_smoother(self):
