@@ -33,7 +33,7 @@ class ParticleFilter:
     def ESS(self):
         return 1.0 / np.sum(self.weights ** 2) if hasattr(self, 'weights') else None
 
-    def run_filter(self, verbose=True):
+    def run_filter(self, verbose=False):
         '''
         returns
             latent state trajectory estimate

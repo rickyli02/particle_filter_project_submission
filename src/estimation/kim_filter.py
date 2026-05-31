@@ -84,6 +84,12 @@ class KimFilter:
             f"T={T}, K={self.model.n_regimes})"
         )
 
+    def _clear_history(self):
+        self.prob_hist = None
+        self.mu_hist   = None
+        self.P_hist    = None
+        self.loglik    = None
+
     # ── filter ────────────────────────────────────────────────────────────────
     @timer
     def run_filter(self):
@@ -108,6 +114,8 @@ class KimFilter:
         eye_n   = np.eye(n)
 
         # ── initialise ────────────────────────────────────────────────────────
+        self._clear_history()
+        
         prob  = model.regime_probabilities_stationary.copy().astype(float)
         mu    = np.zeros((K, n))
         P_cov = np.zeros((K, n, n))
