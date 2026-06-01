@@ -22,17 +22,15 @@ particle_filter_project/
 ├── src/
 │   ├── models/
 │   │   ├── base.py                    # Abstract StateSpaceModel base class
-│   │   ├── linear_gaussian.py         # SimpleLinearGaussianSSM, LinearGaussianSSM, FreeLinearGaussianSSM
-│   │   ├── linear_gaussian_notes.md   # Kalman filter derivations, score, HMC parameterization
+│   │   ├── linear_gaussian.py         # LinearGaussianSSM, SimpleLinearGaussianSSM, FixedAlphaSSM
+│   │   ├── linear_model_notes.md      # Kalman filter derivations, score, HMC parameterization
 │   │   ├── linear_t.py                # LinearTSSM (t-distributed process noise)
 │   │   ├── linear_ARMA.py             # LinearARMASSM (ARMA(1,3) latent state)
 │   │   ├── linear_factor.py           # MultivariateObservationLGSSM (single-factor model)
 │   │   ├── linear_macro.py            # LinearMacroSSM (HLW-style macro model)
-│   │   ├── regime_switching.py        # RegimeSwitchingSSM (general K-regime)
+│   │   ├── linear_macro_model.md      # HLW macro model derivations and parameter descriptions
 │   │   ├── regime_switching_base.py   # RegimeSwitchingBase, RegimeSwitchingDims, RegimeSwitchingStructure
-│   │   ├── regime_switching_macro.py  # RegimeSwitchingMacro (6-state macro model)
-│   │   ├── regime_switching_growth.py # RegimeSwitchingGrowth (2-regime output gap model)
-│   │   └── regime_switching_complex.py# State-dependent transition probabilities (stub)
+│   │   └── regime_switching_simple.py # SimpleRegimeSwitchingSSM, FixedAlphaRS
 │   ├── estimation/
 │   │   ├── mcmc.py                    # MCMCBase abstract class (shared MCMC infrastructure)
 │   │   ├── resampling_methods.py      # Resampling schemes for the particle filter
@@ -44,22 +42,15 @@ particle_filter_project/
 │   │   ├── metropolis_hastings.py     # MetropolisHastings, BlockMetropolisHastings
 │   │   ├── hamilton_mc.py             # HamiltonianMC (gradient-based MCMC)
 │   │   ├── mle_estimator.py           # MLE via Kalman likelihood
-│   │   ├── kde.py                     # Weighted KDE for PF posteriors and MCMC chains
-│   │   ├── mala.py                    # MALA (stub)
-│   │   └── map_smoothing.py           # MAP smoothing over latent states (stub)
+│   │   ├── nelder_mead.py             # Two-stage Nelder-Mead PMMLE (derivative-free)
+│   │   └── kde.py                     # Weighted KDE for PF posteriors and MCMC chains
 │   ├── utils.py                       # Shared numerical utilities
-│   ├── time_series_analysis.py        # ARIMA grid search and BIC comparison
-│   └── older_code/                    # Legacy implementations (superseded)
+│   └── time_series_analysis.py        # ARIMA grid search and BIC comparison
 ├── notebooks/
-│   ├── MC_Projectv3.ipynb             # Main project notebook (filtering, smoothing, prediction, parameter estimation)
-│   ├── testing_estimation.ipynb       # Filter comparisons, N-particle sweep, resampling comparison
-│   ├── parameter_estimation.ipynb     # MLE, MH, PMMH posterior inference
-│   ├── hmc_estimation.ipynb           # HMC vs MH vs MLE comparison
-│   ├── basic_results.ipynb            # Empirical study: filtering, MLE, MH, identifiability, RMSE (N=100 trials)
-│   ├── macro_data_linear.ipynb        # LG-SSMs on US macro FRED data (simple, factor, HLW, free)
-│   └── older_notebooks/               # Earlier notebooks (superseded)
+│   ├── extension_results.ipynb        # Main results notebook (nine sections; see below)
+│   └── hmc_estimation.ipynb           # HMC vs MH vs MLE comparison
 ├── data/                              # Data acquisition scripts and cached CSVs
-└── results/                           # Output files from multi-trial notebook runs (CSV checkpoints, etc.)
+└── results/                           # Output files from multi-trial runs (CSV checkpoints)
 ```
 
 ---
@@ -82,13 +73,13 @@ Abstract base class for all state-space models.
 | `.observation(x)` | Sample `y_t \| x_t` |
 | `.log_transition_density(x_next, x_prev)` | Log `p(x_t \| x_{t-1})` |
 | `.log_observation_density(y, x)` | Log `p(y_t \| x_t)` |
-| `.update_params(constrained_params)` | Update model attributes in-place; called by PMMH each iteration |
+| `.update_params(constrained_params)` | Update model attributes in-place; called by MCMC each iteration |
 | `.clear_state()` | Reset accumulated mutable runtime state; default no-op |
 | `.constrain_params(theta_unc)` | Map unconstrained vector → valid parameter object |
 | `.unconstrain_params(constrained_params)` | Inverse; returns flat `np.ndarray` |
 | `.describe()` | Human-readable model summary with equations |
 
-Note: MCMC saplers in unconstrained parameter space may suffer from slower mixing when true parameters are close to boundary.
+Note: MCMC samplers in unconstrained parameter space may suffer from slower mixing when true parameters are close to a boundary.
 
 ---
 
@@ -96,9 +87,9 @@ Note: MCMC saplers in unconstrained parameter space may suffer from slower mixin
 
 | Class | Model |
 |-------|-------|
-| `SimpleLinearGaussianSSM(phi, alpha, sigma2, tau2)` | `x_t = φ x_{t-1} + ε_t`, `y_t = α x_t + ν_t`; 1-D latent, 1-D observation, Gaussian noise; parameters are **variances** `σ²`, `τ²` |
 | `LinearGaussianSSM(a, c, q, r, b, d, mu_0, p_0)` | `x_t = A x_{t-1} + b + ε_t`, `y_t = C x_t + d + ν_t`; general multivariate; initial distribution defaults to stationary via `solve_discrete_lyapunov` |
-| `FreeLinearGaussianSSM(n_latent, n_obs)` | Fully unconstrained multivariate LG-SSM; A lower-triangular (tanh diagonal for stability), Q via Cholesky, R diagonal log-variance; all entries free for MLE |
+| `SimpleLinearGaussianSSM(phi, alpha, sigma2, tau2)` | `x_t = φ x_{t-1} + ε_t`, `y_t = α x_t + ν_t`; 1-D latent, 1-D observation, Gaussian noise; parameters are **variances** `σ²`, `τ²` |
+| `FixedAlphaSSM(alpha_fixed, phi, sigma2, tau2)` | `SimpleLinearGaussianSSM` with `α` fixed at a known value; free parameters are `(φ, σ², τ²)`; removes the α–σ² scale ambiguity to restore identifiability |
 
 Both `SimpleLinearGaussianSSM` and `LinearGaussianSSM` implement the full `StateSpaceModel` interface including `update_params`, `constrain_params` / `unconstrain_params`, and `log_likelihood(data)` (Kalman filter recursion, exact marginal likelihood).
 
@@ -108,6 +99,8 @@ Both `SimpleLinearGaussianSSM` and `LinearGaussianSSM` implement the full `State
 |--------|-------------|
 | `.score(data)` | Analytic gradient `∇_θ log p(y\|θ)` w.r.t. `(φ, α, σ², τ²)`; propagates sensitivities through the Kalman recursion in a single O(T) forward pass |
 | `.jacobian_constrain_params(u)` | Diagonal Jacobian `dθ/du` of the constrain transform; used by HMC for the chain rule `∇_u ℓ = diag(J) ⊙ ∇_θ ℓ` |
+
+`FixedAlphaSSM` overrides `score` to strip the fixed-α component, returning gradients only w.r.t. the three free parameters.
 
 ---
 
@@ -147,14 +140,6 @@ The model implements custom `.filter()` and `.smoother()` methods (the generic `
 
 ---
 
-### `regime_switching.py`
-
-| Class | Model |
-|-------|-------|
-| `RegimeSwitchingSSM(A_list, C_list, Q_list, R_list, regime_transition_matrix)` | General K-regime Markov-switching linear Gaussian SSM; per-regime matrices `A_k, C_k, Q_k, R_k`; initial regime drawn from stationary distribution of the Markov chain |
-
----
-
 ### `regime_switching_base.py`
 
 Base class for Markov-switching linear Gaussian SSMs. Exposes the interface required by `KimFilter` and `RaoBlackwellizedParticleFilter`.
@@ -167,36 +152,22 @@ Base class for Markov-switching linear Gaussian SSMs. Exposes the interface requ
 
 ---
 
-### `regime_switching_macro.py`
+### `regime_switching_simple.py`
 
-Full macroeconomic regime-switching model with a 6-dimensional augmented latent state and 4 observables.
+Simple 1-D Markov-switching linear Gaussian SSM where only process noise is regime-dependent; `φ`, `α`, and `τ²` are shared across regimes.
 
 ```
-State:    z_t = [x_t, g_t*, u_t*, π_t^e, r_t*, x_{t-1}]
-Observed: y_t = [GDP growth, unemployment, inflation, nominal rate]
-
-Transition:  z_t = A z_{t-1} + a + ε_t,   ε_t ~ N(0, Q_{s_t})
-Observation: y_t = H z_t + b_t(i_{t-1}) + η_t,   η_t ~ N(0, R)
+Transition:  x_t = φ x_{t-1} + ε_t,   ε_t ~ N(0, σ²_{s_t})
+Observation: y_t = α x_t + ν_t,        ν_t ~ N(0, τ²)
+Regime:      s_t | s_{t-1} ~ Categorical(P[s_{t-1}, :])
 ```
 
-Q is regime-specific; A, H, R are shared. The observation intercept `b_t` depends on the lagged nominal rate.
+| Class | Description |
+|-------|-------------|
+| `SimpleRegimeSwitchingSSM(phi, alpha, sigma2, tau2, trans_matrix)` | K-regime model; `sigma2` is a length-K array of per-regime variances; inherits from `RegimeSwitchingBase` so the RBPF and KimFilter accept it directly |
+| `FixedAlphaRS(alpha_fixed, phi, sigma2, tau2, trans_matrix)` | `SimpleRegimeSwitchingSSM` with `α` fixed; free parameters are `(φ, σ²_0, …, σ²_{K-1}, τ², P)` |
 
-| Symbol | Description |
-|--------|-------------|
-| `ModelDims` | Dataclass: `n_regimes`, `n_state=6`, `n_obs=4`, `n_covariates` |
-| `RegimeStructure` | Dataclass: flags controlling which matrices are regime-specific |
-| `MacroParams` | Dataclass: all structural parameters (persistence, long-run means, slopes, Taylor rule, sigmas, transition intercepts) |
-| `RegimeSwitchingMacro` | Model class; matrix builders `build_A`, `build_Q`, `build_H`, `build_b`, `build_R`; `transition_probs` for (optionally covariate-dependent) regime transitions; `constrain_params` / `unconstrain_params` using tanh/exp transforms |
-
----
-
-### `regime_switching_growth.py`
-
-| Class | Model |
-|-------|-------|
-| `RegimeSwitchingGrowth(p11, p22, phi, sigma1, sigma2, g1, g2, mu, tau)` | Two-regime output-gap model; latent gap `x_t = φ x_{t-1} + σ_{s_t} ε_t`; observed GDP growth `y_t = g*_{s_t} + μ(x_t − x_{t-1}) + τ η_t`; augmented state `[x_t, x_{t-1}]`; inherits from `RegimeSwitchingBase` |
-
-Regime 0 is expansion (low volatility, higher `g*`); regime 1 is contraction.
+Flat parameter layout (length `3 + K + K²`): constrained `[φ, α, σ²_0, …, σ²_{K-1}, τ², P_{00}, …, P_{K-1,K-1}]`; unconstrained uses arctanh for `φ`, log for variances, and row-wise softmax logits for `P`.
 
 ---
 
@@ -337,6 +308,20 @@ Requires the model to implement `log_likelihood(data)`, `constrain_params`, `unc
 
 ---
 
+### `nelder_mead.py`
+
+Two-stage derivative-free Particle Marginal Maximum Likelihood Estimator (PMMLE). Uses Nelder-Mead to maximize the particle-filter log-likelihood, which is too noisy for gradient-based methods.
+
+| Symbol | Description |
+|--------|-------------|
+| `NelderMeadPMMLE(model, data, N_particles_1, N_particles_2, n_restarts, resample_method, seed)` | Two-stage optimizer: stage 1 runs `n_restarts` coarse searches at `N_particles_1`; stage 2 refines from the best result at `N_particles_2` |
+| `.fit(theta0)` | Returns `PMMResult` |
+| `PMMResult` | Dataclass: `constrained_params`, `unconstrained_params`, `loglik`, `success_1`, `success_2`, `n_evals_1`, `n_evals_2`, `message`; `.summary()` prints a parameter table |
+
+Within each stage the PF seed is fixed, making the objective deterministic in θ for that run (common random numbers trick). A fresh seed in stage 2 prevents overfitting to the stage-1 noise realization.
+
+---
+
 ### `kde.py`
 
 Weighted kernel density estimation for particle filter posteriors and MCMC chain marginals.
@@ -375,26 +360,21 @@ Weighted kernel density estimation for particle filter posteriors and MCMC chain
 
 ## Notebooks
 
-| Notebook | Contents |
-|----------|----------|
-| `MC_Projectv3.ipynb` | Main project notebook (Ricky Li & Margie Bold): filtering, fixed-lag and complete smoothing, prediction, likelihood evaluation, and parameter estimation tasks for the linear Gaussian SSM |
-| `testing_estimation.ipynb` | Single-run particle filter; Monte Carlo RMSE; effect of particle count on RMSE and log-likelihood variance; noise sensitivity; empirical N-particles vs τ grid study (RMSE and log-likelihood heatmaps, KF floor comparison); resampling method comparison; `LinearTSSM` misspecification test; `LinearARMASSM` |
-| `parameter_estimation.ipynb` | MLE via Kalman log-likelihood; MH and PMMH posterior inference; effect of N_particles on PMMH (α·σ identification ridge); effect of observation noise on parameter recoverability; model misspecification (Gaussian estimator on t or ARMA data) |
-| `hmc_estimation.ipynb` | HMC vs MH vs MLE on `SimpleLinearGaussianSSM`: comparison table, trace plots, posterior density overlays, autocorrelation and effective sample size (ESS), joint scatter plots |
-| `basic_results.ipynb` | Empirical study of `SimpleLinearGaussianSSM`: filtering (PF vs KF), MLE, MH with free and fixed α, weak-identifiability ridge, N=100 multi-trial RMSE and hypothesis tests |
-| `macro_data_linear.ipynb` | LG-SSMs on US macro FRED data: simple LG-SSM, multivariate factor model (GDP, IP, ΔUR), HLW macro model (output gap, trend growth, NAIRU, neutral rate), free LG-SSM; MLE estimation and Kalman filter/RTS smoother for each |
+### `extension_results.ipynb` — Main results notebook
 
----
+Nine-section empirical study covering filtering, estimation, and model extensions.
 
-## Legacy code — `src/older_code/`
+| Section | Contents |
+|---------|----------|
+| I: Basic Results (Filtering) | KF vs PF on synthetic `SimpleLinearGaussianSSM` data; RMSE and log-likelihood comparison |
+| II: PF Detailed Results | Effect of N on RMSE and log-likelihood variance (std ∝ 1/√N); noise sensitivity (σ²/τ² sweep); resampling method comparison (systematic vs stratified vs residual vs multinomial) |
+| III: Basic Results (Estimation) | α–σ² scale-ambiguity ridge visualization; MLE (L-BFGS-B, delta-method std errors); MH posterior; Nelder-Mead PMMLE (two-stage); HMC; four-method comparison table |
+| IV: MCMC Diagnostics | Posterior mean convergence vs chain length; effect of misspecified fixed α; credible intervals and likelihood ratio test |
+| V: PMMH and Blocked PMMH | PMMH vs BlockPMMH comparison; autocorrelation and ESS |
+| VI: Regime-Switching Filtering | `SimpleRegimeSwitchingSSM` synthetic data; RBPF regime detection vs bootstrap PF; particle cloud visualization |
+| VII: Regime-Switching Estimation | Nelder-Mead RBPF-PMLE; RBPF-PMMH posterior inference over `(φ, σ²_0, σ²_1, τ², P)` |
+| IX: Model Misspecification | LG estimator applied to Student-t and ARMA data; parameter bias and log-likelihood penalty quantification |
 
-Earlier monolithic implementations, kept for reference. Superseded by the `models/` + `estimation/` architecture.
+### `hmc_estimation.ipynb`
 
-| File | Description |
-|------|-------------|
-| `particle_filter.py` | Standalone bootstrap PF functions |
-| `state_space_model.py` | Combined SSM + PMMH in a single file |
-| `regime_switching.py` | Two-regime bootstrap PF + PMMH |
-| `rbpf.py` | Rao-Blackwellized PF for a 9-parameter growth model |
-| `kim_filter.py` | Kim filter + MLE for the growth model |
-| `regime_change_macro.py` | Full macro model with Kim filter, smoother, and forecast |
+HMC vs MH vs MLE on `SimpleLinearGaussianSSM`: comparison table, trace plots, posterior density overlays, autocorrelation and effective sample size (ESS), joint scatter plots.
