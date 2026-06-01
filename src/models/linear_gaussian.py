@@ -476,3 +476,8 @@ class FixedAlphaSSM(SimpleLinearGaussianSSM):
             np.exp(u_sigma2),
             np.exp(u_tau2),
         ])
+
+    def score(self, y):
+        """Score w.r.t. free params (phi, sigma2, tau2) — drops the fixed-alpha component."""
+        full = SimpleLinearGaussianSSM.score(self, y)   # [d/dphi, d/dalpha, d/dsigma2, d/dtau2]
+        return np.array([full[0], full[2], full[3]])
