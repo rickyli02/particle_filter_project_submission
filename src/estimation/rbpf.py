@@ -20,11 +20,12 @@ RegimeSwitchingBase (models/regime_switching_base.py) satisfies this interface.
 
 from __future__ import annotations
 
+import time
 import numpy as np
 from scipy.linalg import solve_discrete_lyapunov
 
 from estimation.particle_filter import ParticleFilter
-from utils import logsumexp, timer
+from utils import logsumexp
 
 
 class RaoBlackwellizedParticleFilter(ParticleFilter):
@@ -173,8 +174,7 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
 
         return log_w, mu_new, P_new
 
-    @timer
-    def run_filter(self):
+    def run_filter(self, verbose=False):
         """
         Run the Rao-Blackwellized particle filter.
 
@@ -190,6 +190,7 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
         ---------
         self.regime_prob_history : (T, K) filtered regime probabilities
         """
+        _t0   = time.perf_counter()
         model = self.model
         data  = np.asarray(self.data, dtype=float)
         if data.ndim == 1:
@@ -284,6 +285,14 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
             P_p  = P_new
 
         self.regime_prob_history = regime_prob_history
+
+        if verbose:
+            n_resamples = sum(self.resample_history)
+            elapsed     = time.perf_counter() - _t0
+            print(
+                f"RaoBlackwellizedParticleFilter.run_filter  {elapsed:.3f}s  "
+                f"T={T}  N={N}  K={K}  resamples={n_resamples}  loglik={loglik:.2f}"
+            )
 
         return (
             state_estimates,

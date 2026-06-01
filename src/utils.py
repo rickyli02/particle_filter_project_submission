@@ -75,7 +75,8 @@ def chain_ess(x, max_lag=300):
 
 def rmse(true, est):
     """Root mean squared error between two array-like sequences."""
-    # Verify shapes match    true = np.asarray(true)
+    # Verify shapes match    
+    true = np.asarray(true)
     est = np.asarray(est)
     if true.shape != est.shape:
         raise ValueError(f"Shape mismatch: true {true.shape} vs est {est.shape}")

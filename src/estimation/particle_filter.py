@@ -31,7 +31,9 @@ class ParticleFilter:
 
     @property
     def ESS(self):
-        return 1.0 / np.sum(self.weights ** 2) if hasattr(self, 'weights') else None
+        if self.weights is None:
+            return None
+        return 1.0 / np.sum(self.weights ** 2)
 
     def run_filter(self, verbose=False):
         '''
@@ -55,11 +57,10 @@ class ParticleFilter:
         self.particles = np.array([self.model.sample_initial_distribution() for _ in range(N)])
         self.weights = np.ones(N) / N
 
-        # Weight y_0 using x_0
-
         for t in range(T):
-            # Propagate particles through transition model x_t ~ p(x_t | x_{t-1})
-            self.particles = np.array([self.model.transition(p) for p in self.particles])
+            # Propagate particles x_{t-1} → x_t (skip at t=0: x_0 is already sampled).
+            if t > 0:
+                self.particles = np.array([self.model.transition(p) for p in self.particles])
 
             # Compute log-weights and accumulate marginal log-likelihood
             y_t = self.data[t]

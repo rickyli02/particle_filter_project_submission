@@ -124,6 +124,7 @@ class NelderMeadPMMLE:
         N_particles_1: int = 200,
         N_particles_2: int = 1000,
         resample_method: ResamplingMethod | None = None,
+        filter_cls=None,
         n_restarts: int = 3,
         restart_std: float = 0.5,
         seed=None,
@@ -137,6 +138,9 @@ class NelderMeadPMMLE:
         self._resample_cls = (
             type(resample_method) if resample_method is not None else SystematicResampling
         )
+        # filter_cls: ParticleFilter subclass to use (e.g. RaoBlackwellizedParticleFilter).
+        # Defaults to ParticleFilter for standard models.
+        self._filter_cls = filter_cls if filter_cls is not None else ParticleFilter
         self.n_restarts = n_restarts
         self.restart_std = restart_std
         self.rng = np.random.default_rng(seed)
@@ -165,9 +169,10 @@ class NelderMeadPMMLE:
         except (ValueError, LinAlgError, FloatingPointError):
             return -np.inf
 
+        # Reset model RNG for reproducibility (used by bootstrap PF; harmless for RBPF).
         self.model.rng = np.random.default_rng(pf_seed)
 
-        pf = ParticleFilter(
+        pf = self._filter_cls(
             model=self.model,
             N_particles=n_particles,
             data=self.data,

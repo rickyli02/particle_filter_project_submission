@@ -309,7 +309,7 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
     # does not broadcast over N particles).
 
     def sample_initial_distribution(self):
-        return self.rng.normal(0, np.sqrt(self.initial_var))
+        return np.array([self.rng.normal(0, np.sqrt(self.initial_var))])
 
     def initial_density(self, x):
         return norm.pdf(x, loc=0, scale=np.sqrt(self.initial_var))
