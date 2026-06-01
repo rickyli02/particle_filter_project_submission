@@ -107,6 +107,7 @@ class ParticleFilter:
         # possibilities: forward-backward smoother, two-filter smoother, fixed-lag smoother
         pass
 
+    # Backwards compatability. Use latent_state_estmimate after run_filter()
     def filtered_trajectory(self, state_idx=0):
         # Extract, flatten weights, and stack into a matrix (n_time_steps, n_particles)
         W = np.stack([w.flatten() for w in self.weight_history])

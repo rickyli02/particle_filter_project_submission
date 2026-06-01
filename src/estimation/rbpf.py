@@ -84,6 +84,95 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
 
     # ── filter ────────────────────────────────────────────────────────────────
 
+    def _kalman_update_step(self, y_t, s_particles, mu_p, P_p, ssm_lists):
+        """
+        Vectorised Kalman predict/update for all regime particles at one timestep.
+
+        For each regime k, runs a batched Kalman filter over the Nk particles
+        currently in that regime and returns their log-weights and updated
+        (mean, covariance) pairs.
+
+        Parameters
+        ----------
+        y_t        : (m,) observation at time t
+        s_particles: (N,) int  current regime index per particle
+        mu_p       : (N, n)    prior Kalman means
+        P_p        : (N, n, n) prior Kalman covariances
+        ssm_lists  : dict with keys A_list, C_list, Q_list, R_list, b_list, d_list
+
+        Returns
+        -------
+        log_w  : (N,) unnormalised log-weights
+        mu_new : (N, n) updated means
+        P_new  : (N, n, n) updated covariances
+        """
+        A_list, C_list = ssm_lists["A_list"], ssm_lists["C_list"]
+        Q_list, R_list = ssm_lists["Q_list"], ssm_lists["R_list"]
+        b_list, d_list = ssm_lists["b_list"], ssm_lists["d_list"]
+
+        N, n = mu_p.shape
+        m    = len(y_t)
+        K    = len(A_list)
+
+        log_w  = np.full(N, -np.inf)
+        mu_new = np.empty((N, n))
+        P_new  = np.empty((N, n, n))
+
+        for k in range(K):
+            mask = s_particles == k
+            if not mask.any():
+                continue
+
+            A_k = A_list[k]                                          # (n, n)
+            C_k = C_list[k]                                          # (m, n)
+            Q_k = Q_list[k]                                          # (n, n)
+            R_k = R_list[k]                                          # (m, m)
+            b_k = b_list[k] if b_list is not None else np.zeros(n)  # (n,)
+            d_k = d_list[k] if d_list is not None else np.zeros(m)  # (m,)
+
+            mu_k = mu_p[mask]   # (Nk, n)
+            P_k  = P_p[mask]    # (Nk, n, n)
+
+            # Predict: mu_pred = A z_{t-1} + b,  P_pred = A P A^T + Q
+            mu_pred = mu_k @ A_k.T + b_k
+            AP      = np.matmul(A_k, P_k)
+            P_pred  = 0.5 * (np.matmul(AP, A_k.T) + Q_k)
+            P_pred += 0.5 * P_pred.transpose(0, 2, 1)
+
+            # Innovation: v = y - C mu_pred - d,  S = C P_pred C^T + R
+            v  = y_t - mu_pred @ C_k.T - d_k
+            CP = np.matmul(C_k, P_pred)
+            S  = np.matmul(CP, C_k.T) + R_k
+            # Symmetrize and add jitter so a single near-singular matrix
+            # does not kill every regime-k particle via a batch LinAlgError.
+            S  = 0.5 * (S + S.transpose(0, 2, 1)) + 1e-8 * np.eye(m)
+
+            # Log-weight: log N(y_t ; C mu_pred + d, S) via Cholesky
+            try:
+                L       = np.linalg.cholesky(S)                     # (Nk, m, m)
+                log_det = 2.0 * np.log(np.diagonal(L, axis1=1, axis2=2)).sum(axis=1)
+                z       = np.linalg.solve(L, v[:, :, None]).squeeze(-1)
+                log_w[mask] = -0.5 * (m * np.log(2.0 * np.pi) + log_det + (z ** 2).sum(axis=1))
+            except np.linalg.LinAlgError:
+                # Cholesky failed despite jitter — leave weights at -inf.
+                mu_new[mask] = mu_pred
+                P_new[mask]  = P_pred
+                continue
+
+            # Update: K = P_pred C^T S^{-1},  mu_new = mu_pred + K v
+            K_gain       = np.linalg.solve(S, CP).transpose(0, 2, 1)  # (Nk, n, m)
+            mu_new[mask] = mu_pred + np.matmul(K_gain, v[:, :, None]).squeeze(-1)
+
+            # Joseph form: P_new = (I - KC) P_pred (I - KC)^T + K R K^T
+            KC  = np.matmul(K_gain, C_k)
+            IKC = np.eye(n) - KC
+            T1  = np.matmul(np.matmul(IKC, P_pred), IKC.transpose(0, 2, 1))
+            T2  = np.matmul(np.matmul(K_gain, R_k),  K_gain.transpose(0, 2, 1))
+            P_out        = T1 + T2
+            P_new[mask]  = 0.5 * (P_out + P_out.transpose(0, 2, 1))
+
+        return log_w, mu_new, P_new
+
     @timer
     def run_filter(self):
         """
@@ -111,35 +200,33 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
         N    = self.N_particles
         rng  = self.rng
 
-        P_trans = model.regime_transition_matrix          # (K, K)
-        A_list  = model.A_list
-        C_list  = model.C_list
-        Q_list  = model.Q_list
-        R_list  = model.R_list
-        b_list  = getattr(model, "b_list", None)
-        d_list  = getattr(model, "d_list", None)
+        ssm_lists = {
+            "A_list": model.A_list,
+            "C_list": model.C_list,
+            "Q_list": model.Q_list,
+            "R_list": model.R_list,
+            "b_list": getattr(model, "b_list", None),
+            "d_list": getattr(model, "d_list", None),
+        }
 
-        _b = lambda k: b_list[k] if b_list is not None else np.zeros(n)
-        _d = lambda k: d_list[k] if d_list is not None else np.zeros(m)
-
-        # ── initial Kalman covariance per regime ──────────────────────────────
+        # Initial Kalman covariance per regime: stationary if A is stable,
+        # else a diagonal scaled by process noise.
         P0 = []
         for k in range(K):
-            A_k = A_list[k]
-            Q_k = Q_list[k]
-            eigs = np.abs(np.linalg.eigvals(A_k))
-            if np.all(eigs < 1.0):
+            A_k, Q_k = ssm_lists["A_list"][k], ssm_lists["Q_list"][k]
+            if np.all(np.abs(np.linalg.eigvals(A_k)) < 1.0):
                 P0.append(symmetrize(solve_discrete_lyapunov(A_k, Q_k)))
             else:
                 P0.append(np.eye(n) * (np.trace(Q_k) + 1.0))
 
-        # ── initialise particles ──────────────────────────────────────────────
+        # Initialise particles from the stationary regime distribution.
         pi          = model.regime_probabilities_stationary
-        s_particles = rng.choice(K, size=N, p=pi).astype(int)   # (N,)
-        mu_p        = np.zeros((N, n))                           # (N, n)
-        P_p         = np.array([P0[s] for s in s_particles])    # (N, n, n)
+        s_particles = rng.choice(K, size=N, p=pi).astype(int)
+        # Use the model's initial state mean if provided; fall back to zeros.
+        m0   = getattr(model, "mu_0", None)
+        mu_p = np.tile(m0, (N, 1)) if m0 is not None else np.zeros((N, n))
+        P_p  = np.array([P0[s] for s in s_particles])   # (N, n, n)
 
-        # ── clear inherited history lists ─────────────────────────────────────
         self.particle_history.clear()
         self.weight_history.clear()
         self.resample_history.clear()
@@ -148,112 +235,44 @@ class RaoBlackwellizedParticleFilter(ParticleFilter):
         state_estimates     = np.zeros((T, n))
         regime_prob_history = np.zeros((T, K))
 
-        # ── filter loop ───────────────────────────────────────────────────────
         for t in range(T):
-            y_t = data[t]   # (m,)
+            y_t = data[t]
 
-            # 1. Propagate regimes (skip at t=0; particles drawn from π above)
+            # Fetch per-step so covariate-dependent transitions are respected.
+            P_trans = model.regime_transition_matrix
+
+            # Propagate regimes (skip t=0; particles already drawn from π).
             if t > 0:
-                cum_P       = np.cumsum(P_trans[s_particles], axis=1)   # (N, K)
-                u           = rng.random(N)[:, None]                     # (N, 1)
+                cum_P       = np.cumsum(P_trans[s_particles], axis=1)  # (N, K)
+                u           = rng.random(N)[:, None]                    # (N, 1)
                 s_particles = np.argmax(u < cum_P, axis=1).astype(int)
 
-            # 2. Per-regime vectorised Kalman predict/update + log-weights
-            log_w  = np.full(N, -np.inf)
-            mu_new = np.empty((N, n))
-            P_new  = np.empty((N, n, n))
+            # Kalman predict/update for every regime; returns per-particle log-weights.
+            log_w, mu_new, P_new = self._kalman_update_step(
+                y_t, s_particles, mu_p, P_p, ssm_lists
+            )
 
-            for k in range(K):
-                mask = s_particles == k
-                if not mask.any():
-                    continue
-
-                A_k = A_list[k]   # (n, n)
-                C_k = C_list[k]   # (m, n)
-                Q_k = Q_list[k]   # (n, n)
-                R_k = R_list[k]   # (m, m)
-                b_k = _b(k)       # (n,)
-                d_k = _d(k)       # (m,)
-
-                mu_k = mu_p[mask]  # (Nk, n)
-                P_k  = P_p[mask]   # (Nk, n, n)
-
-                # ── predict ───────────────────────────────────────────────────
-                # mu_pred[i] = A_k @ mu_k[i] + b_k
-                mu_pred = mu_k @ A_k.T + b_k                        # (Nk, n)
-                # P_pred[i] = A_k @ P_k[i] @ A_k^T + Q_k
-                AP     = np.matmul(A_k, P_k)                        # (Nk, n, n)
-                P_pred = np.matmul(AP, A_k.T) + Q_k                 # (Nk, n, n)
-                P_pred = 0.5 * (P_pred + P_pred.transpose(0, 2, 1))
-
-                # ── innovation ────────────────────────────────────────────────
-                # v[i] = y_t - C_k @ mu_pred[i] - d_k
-                v  = y_t - mu_pred @ C_k.T - d_k                    # (Nk, m)
-                # S[i] = C_k @ P_pred[i] @ C_k^T + R_k
-                CP = np.matmul(C_k, P_pred)                         # (Nk, m, n)
-                S  = np.matmul(CP, C_k.T) + R_k                     # (Nk, m, m)
-                S  = 0.5 * (S + S.transpose(0, 2, 1))
-
-                # ── log-weights: log N(y_t ; C_k mu_pred + d_k, S) ───────────
-                try:
-                    L       = np.linalg.cholesky(S)                 # (Nk, m, m)
-                    log_det = 2.0 * np.log(
-                        np.diagonal(L, axis1=1, axis2=2)
-                    ).sum(axis=1)                                    # (Nk,)
-                    # solve L @ z = v  element-wise → z[i] = L[i]^{-1} v[i]
-                    z = np.linalg.solve(L, v[:, :, None]).squeeze(-1)  # (Nk, m)
-                    log_w[mask] = -0.5 * (
-                        m * np.log(2.0 * np.pi)
-                        + log_det
-                        + np.sum(z ** 2, axis=1)
-                    )
-                except np.linalg.LinAlgError:
-                    # Innovation covariance not PD — particle weight stays -inf
-                    mu_new[mask] = mu_pred
-                    P_new[mask]  = P_pred
-                    continue
-
-                # ── Kalman gain K = P_pred C_k^T S^{-1} ──────────────────────
-                # Solve S[i] X[i] = CP[i]; then K[i] = X[i]^T
-                K_gain = np.linalg.solve(S, CP).transpose(0, 2, 1)  # (Nk, n, m)
-
-                # ── update ────────────────────────────────────────────────────
-                mu_new[mask] = mu_pred + np.matmul(
-                    K_gain, v[:, :, None]
-                ).squeeze(-1)                                        # (Nk, n)
-
-                # Joseph form: P = (I - KC) P_pred (I - KC)^T + K R K^T
-                KC   = np.matmul(K_gain, C_k)                       # (Nk, n, n)
-                IKC  = np.eye(n) - KC                               # (Nk, n, n)
-                T1   = np.matmul(np.matmul(IKC, P_pred),
-                                 IKC.transpose(0, 2, 1))            # (Nk, n, n)
-                T2   = np.matmul(np.matmul(K_gain, R_k),
-                                 K_gain.transpose(0, 2, 1))         # (Nk, n, n)
-                P_out        = T1 + T2
-                P_new[mask]  = 0.5 * (P_out + P_out.transpose(0, 2, 1))
-
-            # 3. Log-likelihood contribution
+            # Log-likelihood increment: log (1/N) Σ w_i
             log_sum  = logsumexp(log_w)
             loglik  += log_sum - np.log(N)
 
-            # 4. Normalise weights
+            # Normalise weights (guard against floating-point drift).
             weights  = np.exp(log_w - log_sum)
-            weights /= weights.sum()   # guard against floating-point drift
+            weights /= weights.sum()
 
-            # 5. Regime-averaged state and filtered regime probs
+            # Regime-averaged state estimate and filtered regime probabilities.
             state_estimates[t] = (weights[:, None] * mu_new).sum(axis=0)
             for k in range(K):
                 regime_prob_history[t, k] = weights[s_particles == k].sum()
 
-            # 6. Store history (before resampling — consistent with ParticleFilter)
+            # Store history before resampling — consistent with ParticleFilter.
             self.particle_history.append(s_particles.copy())
             self.weight_history.append(weights.copy())
 
-            # 7. Resample when ESS is low
+            # Resample when ESS drops below threshold.
             ess       = 1.0 / np.sum(weights ** 2)
             resampled = 0
             if self.resample_method is not None and ess < self.resample_threshold * N:
-                # Pass np.arange(N) to extract the resampled indices
                 idx         = self.resample_method.resample(np.arange(N), weights)
                 s_particles = s_particles[idx]
                 mu_new      = mu_new[idx]

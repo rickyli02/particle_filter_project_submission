@@ -179,7 +179,7 @@ class LinearGaussianSSM(StateSpaceModel):
 # log_likelihood and score use the fast scalar Kalman recursion; transition and
 # observation keep batched-particle support for use with the particle filter.
 class SimpleLinearGaussianSSM(LinearGaussianSSM):
-    def __init__(self, phi, alpha, sigma2, tau2, seed=None):
+    def __init__(self, phi, alpha, sigma2, tau2, initial_var = None, seed=None):
         # Validate before super() so the error messages are readable (super() calls
         # _stationary_distribution which raises a less specific message for phi >= 1).
         if abs(phi) >= 1:
@@ -195,6 +195,13 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
             r=np.array([[tau2]]),
             seed=seed,
         )
+        self._initial_var_fixed = initial_var is not None
+        if initial_var is not None:
+            self.initial_var = initial_var
+            self.P_0 = np.array([[initial_var]])
+        else:
+            self.initial_var = self.stationary_var
+        
         # Override params_dict to expose scalar names instead of matrix names.
         self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma2': sigma2, 'tau2': tau2}
 
@@ -215,6 +222,7 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
     @property
     def stationary_var(self):
         return self.sigma2 / (1 - self.phi ** 2) if abs(self.phi) < 1 else np.inf
+
 
     # ── validity ──────────────────────────────────────────────────────────────
 
@@ -241,7 +249,7 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
             f"  Parameters: {self.params_dict}\n"
             f"  Transition:  x_t = {self.phi} * x_(t-1) + eps_t,   eps_t ~ N(0, {self.sigma2})\n"
             f"  Observation: y_t = {self.alpha} * x_t + nu_t,       nu_t  ~ N(0, {self.tau2})\n"
-            f"  Initial:     x_0 ~ N(0, {self.stationary_var:.6g})  [stationary]"
+            f"  Initial:     x_0 ~ N(0, {self.initial_var:.6g})  [{'fixed' if self._initial_var_fixed else 'stationary'}]"
         )
 
     # ── parameter interface ───────────────────────────────────────────────────
@@ -260,6 +268,10 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
         # Refresh the stationary initial distribution (phi and sigma2 may have changed).
         # LinearGaussianSSM.update_params does not do this automatically.
         self.mu_0, self.P_0 = self._stationary_distribution()
+        if self._initial_var_fixed:
+            self.P_0 = np.array([[self.initial_var]])
+        else:
+            self.initial_var = self.stationary_var
         # Restore the scalar params_dict (parent overwrites it with matrix keys).
         self.params_dict = {'phi': phi, 'alpha': alpha, 'sigma2': sigma2, 'tau2': tau2}
 
@@ -297,10 +309,10 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
     # does not broadcast over N particles).
 
     def sample_initial_distribution(self):
-        return self.rng.normal(0, np.sqrt(self.stationary_var))
+        return self.rng.normal(0, np.sqrt(self.initial_var))
 
     def initial_density(self, x):
-        return norm.pdf(x, loc=0, scale=np.sqrt(self.stationary_var))
+        return norm.pdf(x, loc=0, scale=np.sqrt(self.initial_var))
 
     def transition(self, x_prev):
         if np.isscalar(x_prev):
@@ -326,13 +338,13 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
         Exact log p(y_{0:T-1} | theta) via scalar Kalman filter recursion.
 
         y_t | y_{0:t-1} ~ N(alpha * mu_{t|t-1},  alpha^2 * P_{t|t-1} + tau^2)
-        Initial:  mu_0 = 0,  P_0 = sigma^2 / (1 - phi^2)  [stationary]
+        Initial:  mu_0 = 0,  P_0 = initial_var (when not provided in initialization, sigma^2 / (1 - phi^2)  [stationary])
         """
         y = np.asarray(y, dtype=float).ravel()
         T = len(y)
 
         mu = 0.0
-        P  = self.stationary_var
+        P  = self.initial_var
 
         loglik = 0.0
         for t in range(T):
@@ -363,20 +375,24 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
         y = np.asarray(y, dtype=float).ravel()
         T = len(y)
         phi, alpha, sigma2, tau2 = self.phi, self.alpha, self.sigma2, self.tau2
+        initial_var = self.initial_var
         phi2 = phi ** 2
         one_minus_phi2 = 1.0 - phi2
 
         mu = 0.0
-        P  = sigma2 / one_minus_phi2
+        P  = initial_var
 
         # Sensitivities of (mu, P) w.r.t. (phi, alpha, sigma2, tau2), indices 0-3
         dmu = np.zeros(4)
-        dp  = np.array([
-            2.0 * phi * sigma2 / one_minus_phi2 ** 2,  # dP0/dphi
-            0.0,                                         # dP0/dalpha
-            1.0 / one_minus_phi2,                        # dP0/dsigma2
-            0.0,                                         # dP0/dtau2
-        ])
+        if self._initial_var_fixed:
+            dp = np.zeros(4)
+        else:
+            dp = np.array([
+                2.0 * phi * sigma2 / one_minus_phi2 ** 2,  # dP0/dphi
+                0.0,                                         # dP0/dalpha
+                1.0 / one_minus_phi2,                        # dP0/dsigma2
+                0.0,                                         # dP0/dtau2
+            ])
 
         grad = np.zeros(4)
 
@@ -432,264 +448,31 @@ class SimpleLinearGaussianSSM(LinearGaussianSSM):
         raise NotImplementedError
 
 
-# Unconstrained LG-SSM — all matrix entries free (subject to structural constraints).
-#
-# Parametrization choices:
-#   A  : lower triangular; diagonal via tanh (spectral radius < 1 guaranteed)
-#   Q  : Q = L L^T,  L lower triangular with positive diagonal (Cholesky)
-#   C  : free (m × n)
-#   R  : diagonal; log-variance transform (positive diagonal guaranteed)
-#   b  : free (n,)  — transition intercept
-#   d  : free (m,)  — observation intercept
-#
-# Flat params layout (n = n_latent, m = n_obs):
-#   [ A_lower_triangular  (n(n+1)/2),   ← diagonal entries ∈ (-1, 1) via tanh
-#     L_lower_triangular  (n(n+1)/2),   ← diagonal entries > 0
-#     C_row_major         (m × n),
-#     R_variances         (m,),          ← stored as raw variances
-#     b                   (n,),
-#     d                   (m,) ]
-#
-# Identification warning:
-#   Without structural restrictions the latent states are identified only up to
-#   an invertible linear transformation. Weak identifiability is the norm; MLE
-#   with multiple random restarts may converge to different solutions that give
-#   nearly equal log-likelihoods.
-class FreeLinearGaussianSSM(LinearGaussianSSM):
-    """
-    Unconstrained LG-SSM with user-specified latent dimension.
+class FixedAlphaSSM(SimpleLinearGaussianSSM):
+    """SimpleLinearGaussianSSM with alpha fixed at 1; estimates (phi, sigma2, tau2)."""
 
-    Parameters
-    ----------
-    n_latent : int
-        Latent state dimension.
-    n_obs : int
-        Observation dimension.
-    A_init : (n, n) array | None
-        Initial lower-triangular transition matrix. Defaults to 0.5 * I.
-    Q_L_init : (n, n) array | None
-        Initial Cholesky factor of Q. Defaults to I.
-    C_init : (m, n) array | None
-        Initial observation matrix. Defaults to small random N(0, 0.1) entries.
-    R_vars_init : (m,) array | None
-        Initial observation noise variances. Defaults to ones.
-    b_init : (n,) array | None
-        Transition intercept. Defaults to zeros.
-    d_init : (m,) array | None
-        Observation intercept. Defaults to zeros.
-    seed : int | None
-    """
-
-    def __init__(
-        self,
-        n_latent, n_obs,
-        A_init=None, Q_L_init=None, C_init=None,
-        R_vars_init=None, b_init=None, d_init=None,
-        seed=None,
-    ):
-        rng = np.random.default_rng(seed)
-        self._n = int(n_latent)
-        self._m = int(n_obs)
-        n, m = self._n, self._m
-
-        if A_init is None:
-            A_init = 0.5 * np.eye(n)
-        else:
-            A_init = np.tril(np.asarray(A_init, dtype=float))
-
-        if Q_L_init is None:
-            Q_L_init = np.eye(n)
-        else:
-            Q_L_init = np.tril(np.asarray(Q_L_init, dtype=float))
-
-        if C_init is None:
-            C_init = rng.normal(0, 0.1, size=(m, n))
-        else:
-            C_init = np.asarray(C_init, dtype=float)
-
-        if R_vars_init is None:
-            R_vars_init = np.ones(m)
-        else:
-            R_vars_init = np.asarray(R_vars_init, dtype=float)
-
-        if b_init is None:
-            b_init = np.zeros(n)
-        else:
-            b_init = np.asarray(b_init, dtype=float)
-
-        if d_init is None:
-            d_init = np.zeros(m)
-        else:
-            d_init = np.asarray(d_init, dtype=float)
-
-        self._Q_L = Q_L_init.copy()
-
-        super().__init__(
-            a=A_init,
-            c=C_init,
-            q=Q_L_init @ Q_L_init.T,
-            r=np.diag(R_vars_init),
-            b=b_init,
-            d=d_init,
-            seed=seed,
-        )
-        # Stationary mu_0/P_0 already set by super().__init__ (mu_0/p_0 were None).
-        self.params_dict = self._make_params_dict(
-            A_init, Q_L_init, C_init, R_vars_init, b_init, d_init
-        )
-
-    # ── helpers ───────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _tril_idx(n):
-        """Lower-triangular (i, j) pairs in row-major order."""
-        return [(i, j) for i in range(n) for j in range(i + 1)]
-
-    def _make_params_dict(self, A, Q_L, C, R_vars, b, d):
-        n, m = self._n, self._m
-        out = {}
-        for i, j in self._tril_idx(n):
-            out[f'A_{i}{j}'] = float(A[i, j])
-        for i, j in self._tril_idx(n):
-            out[f'L_{i}{j}'] = float(Q_L[i, j])
-        for i in range(m):
-            for j in range(n):
-                out[f'C_{i}{j}'] = float(C[i, j])
-        for k in range(m):
-            out[f'R_{k}'] = float(R_vars[k])
-        for i in range(n):
-            out[f'b_{i}'] = float(b[i])
-        for k in range(m):
-            out[f'd_{k}'] = float(d[k])
-        return out
-
-    def _unpack(self, constrained_params):
-        n, m = self._n, self._m
-        v = list(constrained_params)
-        ptr = 0
-
-        A = np.zeros((n, n))
-        for i, j in self._tril_idx(n):
-            A[i, j] = v[ptr]; ptr += 1
-
-        Q_L = np.zeros((n, n))
-        for i, j in self._tril_idx(n):
-            Q_L[i, j] = v[ptr]; ptr += 1
-
-        C      = np.array(v[ptr:ptr + m * n], dtype=float).reshape(m, n); ptr += m * n
-        R_vars = np.array(v[ptr:ptr + m],     dtype=float);               ptr += m
-        b      = np.array(v[ptr:ptr + n],     dtype=float);               ptr += n
-        d      = np.array(v[ptr:ptr + m],     dtype=float)
-
-        return A, Q_L, C, R_vars, b, d
-
-    # ── parameter interface ───────────────────────────────────────────────────
+    def __init__(self, alpha_fixed, phi, sigma2, tau2, initial_var = None, seed=None):
+        self.ALPHA_FIXED = alpha_fixed
+        super().__init__(phi=phi, alpha=self.ALPHA_FIXED, sigma2=sigma2, tau2=tau2, initial_var=initial_var, seed=seed)
+        self.params_dict = {'phi': phi, 'sigma2': sigma2, 'tau2': tau2}
 
     def update_params(self, constrained_params):
-        A, Q_L, C, R_vars, b, d = self._unpack(constrained_params)
-        self._Q_L = Q_L
-        super().update_params({
-            'A': A, 'C': C,
-            'Q': Q_L @ Q_L.T,
-            'R': np.diag(R_vars),
-            'b': b, 'd': d,
-        })
-        self.mu_0, self.P_0 = self._stationary_distribution()
-        self.params_dict = self._make_params_dict(A, Q_L, C, R_vars, b, d)
+        phi, sigma2, tau2 = constrained_params
+        SimpleLinearGaussianSSM.update_params(self, [phi, self.ALPHA_FIXED, sigma2, tau2])
+        self.params_dict = {'phi': phi, 'sigma2': sigma2, 'tau2': tau2}
 
     def unconstrain_params(self, constrained_params):
-        n, m = self._n, self._m
-        A, Q_L, C, R_vars, b, d = self._unpack(constrained_params)
-        u = []
-        for i, j in self._tril_idx(n):
-            u.append(
-                float(np.arctanh(np.clip(A[i, i], -1 + 1e-7, 1 - 1e-7))) if i == j
-                else float(A[i, j])
-            )
-        for i, j in self._tril_idx(n):
-            u.append(float(np.log(Q_L[i, i])) if i == j else float(Q_L[i, j]))
-        u.extend(C.ravel().tolist())
-        u.extend(np.log(R_vars).tolist())
-        u.extend(b.tolist())
-        u.extend(d.tolist())
-        return np.array(u)
+        phi, sigma2, tau2 = constrained_params
+        return np.array([np.arctanh(phi), np.log(sigma2), np.log(tau2)])
 
     def constrain_params(self, unconstrained_params):
-        n, m = self._n, self._m
-        u = list(unconstrained_params)
-        ptr = 0
-
-        A = np.zeros((n, n))
-        for i, j in self._tril_idx(n):
-            A[i, j] = float(np.tanh(u[ptr])) if i == j else float(u[ptr])
-            ptr += 1
-
-        Q_L = np.zeros((n, n))
-        for i, j in self._tril_idx(n):
-            Q_L[i, j] = float(np.exp(u[ptr])) if i == j else float(u[ptr])
-            ptr += 1
-
-        C      = np.array(u[ptr:ptr + m * n], dtype=float); ptr += m * n
-        R_vars = np.exp(np.array(u[ptr:ptr + m], dtype=float)); ptr += m
-        b      = np.array(u[ptr:ptr + n], dtype=float); ptr += n
-        d      = np.array(u[ptr:ptr + m], dtype=float)
-
-        return (
-            [A[i, j]   for i, j in self._tril_idx(n)]
-            + [Q_L[i, j] for i, j in self._tril_idx(n)]
-            + C.tolist()
-            + R_vars.tolist()
-            + b.tolist()
-            + d.tolist()
-        )
+        u_phi, u_sigma2, u_tau2 = unconstrained_params
+        return [float(np.tanh(u_phi)), float(np.exp(u_sigma2)), float(np.exp(u_tau2))]
 
     def jacobian_constrain_params(self, unconstrained_params):
-        """
-        Diagonal Jacobian of constrain_params.
-
-        Diagonal entries:
-          A_ii  : 1 - tanh²(u)    A_ij (i>j): 1
-          L_ii  : exp(u)           L_ij (i>j): 1
-          C_ij  : 1
-          R_k   : exp(u)
-          b_i   : 1
-          d_k   : 1
-        """
-        n, m = self._n, self._m
-        u = np.asarray(unconstrained_params)
-        diag = []
-        ptr = 0
-
-        for i, j in self._tril_idx(n):
-            diag.append(1.0 - np.tanh(u[ptr]) ** 2 if i == j else 1.0)
-            ptr += 1
-
-        for i, j in self._tril_idx(n):
-            diag.append(float(np.exp(u[ptr])) if i == j else 1.0)
-            ptr += 1
-
-        diag.extend([1.0] * (m * n)); ptr += m * n
-        for _ in range(m):
-            diag.append(float(np.exp(u[ptr]))); ptr += 1
-        diag.extend([1.0] * (n + m))
-
-        return np.diag(diag)
-
-    # ── representation ────────────────────────────────────────────────────────
-
-    def __repr__(self):
-        return f"FreeLinearGaussianSSM(n_latent={self._n}, n_obs={self._m})"
-
-    def describe(self):
-        n, m = self._n, self._m
-        spec_rad = float(np.abs(np.linalg.eigvals(self.A)).max())
-        n_params = n * (n + 1) + m * n + 2 * m + n
-        return (
-            f"FreeLinearGaussianSSM\n"
-            f"  n_latent={n}, n_obs={m},  total free params={n_params}\n"
-            f"  A lower triangular, spectral radius={spec_rad:.4f}\n"
-            f"  Q = L L^T  (Cholesky;  L lower triangular)\n"
-            f"  R = diag({np.diag(self.R).round(4).tolist()})\n"
-            f"  b={self.b.round(4).tolist()},  d={self.d.round(4).tolist()}\n"
-            f"  Initial: x_0 ~ N(mu_0, P_0)  [stationary]"
-        )
+        u_phi, u_sigma2, u_tau2 = unconstrained_params
+        return np.diag([
+            1.0 - np.tanh(u_phi) ** 2,
+            np.exp(u_sigma2),
+            np.exp(u_tau2),
+        ])
