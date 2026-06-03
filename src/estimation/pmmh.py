@@ -140,7 +140,7 @@ class PMMH(MCMCBase):
 
             if i > 0 and i % log_interval == 0:
                 print(
-                    f"[{i}/{self.n_iter}]  theta = {chain.mean(axis=0)},  "
+                    f"[{i}/{self.n_iter}]  theta = {chain[i + 1]},  "
                     f"loglik = {loglik_curr:.2f},  accept rate = {accepted[:i].mean():.3f}"
                 )
 
